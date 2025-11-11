@@ -225,6 +225,10 @@ class PlaywrightScrapeResponse(BaseModel):
     url: str
     scraped_data: Dict[str, Any] = Field(..., description="Raw scraped data from playwright")
     summarized_data: Dict[str, Any] = Field(..., description="Structured data from agent summarization")
+    portal: Optional[str] = Field(
+        default=None,
+        description="Detected job portal (e.g., LinkedIn, Indeed, etc.)"
+    )
     match_score: Optional[float] = Field(default=None, description="Job-candidate match score (0.0-1.0)")
     key_matches: Optional[List[str]] = Field(default=None, description="Key matching qualifications")
     requirements_met: Optional[int] = Field(default=None, description="Number of requirements met")

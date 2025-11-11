@@ -2058,6 +2058,7 @@ async def playwright_scrape(
         - success: Whether scraping and summarization was successful
         - error: Error message if any
     """
+    portal: Optional[str] = None
     try:
         from playwright.sync_api import sync_playwright
         from scrapers.response import summarize_scraped_data
@@ -2165,6 +2166,7 @@ async def playwright_scrape(
                 # Get page title
                 page_title = page.title()
                 current_url = page.url
+                detected_portal = detect_portal(current_url)
                 html_content = page.content()
                 text_content = page.inner_text("body")
                 
@@ -2284,7 +2286,8 @@ async def playwright_scrape(
                     "qualifications": qualifications,
                     "suggested_skills": skills,
                     "text_content": text_content,
-                    "html_length": len(html_content)
+                    "html_length": len(html_content),
+                    "portal": detected_portal,
                 }
                 
                 browser.close()
@@ -2293,6 +2296,7 @@ async def playwright_scrape(
         
         # Run Playwright scraping in thread pool
         scraped_data = await asyncio.to_thread(scrape_with_playwright, url)
+        portal = scraped_data.get("portal") or detect_portal(url)
         
         print(f"\n{'='*80}")
         print(f"AGENT SUMMARIZATION - Processing scraped data")
@@ -2304,6 +2308,8 @@ async def playwright_scrape(
             raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY environment variable.")
         
         summarized_data = await asyncio.to_thread(summarize_scraped_data, scraped_data, openai_key)
+        if isinstance(summarized_data, dict):
+            summarized_data.setdefault("portal", portal)
         
         # STEP 5: Create JobPosting from summarized data
         job = JobPosting(
@@ -2423,7 +2429,6 @@ Be strict with scoring:
 
                 firebase_service = get_firebase_service()
 
-                portal = detect_portal(url)
                 match_score = scoring_result.get("match_score")
                 key_matches = scoring_result.get("key_matches", []) or []
                 reasoning = scoring_result.get("reasoning", "")
@@ -2511,6 +2516,7 @@ Be strict with scoring:
             url=url,
             scraped_data=scraped_data,
             summarized_data=summarized_data,
+            portal=portal,
             match_score=scoring_result["match_score"] if scoring_result else None,
             key_matches=scoring_result["key_matches"] if scoring_result else None,
             requirements_met=scoring_result["requirements_met"] if scoring_result else None,
@@ -2535,6 +2541,7 @@ Be strict with scoring:
             url=url if 'url' in locals() else "",
             scraped_data={},
             summarized_data={},
+            portal=portal,
             match_score=None,
             key_matches=None,
             requirements_met=None,
