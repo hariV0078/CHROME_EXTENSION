@@ -596,44 +596,32 @@ class FirebaseService:
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] Full document_data: {json.dumps(serialize_for_json(document_data), indent=2)}")
             
             # Reference to sponsorship_checks/{user_id}/{doc_id} structure
-            # Since Firestore doesn't allow documents directly under documents,
-            # we'll create the user_id document first, then store documents in a subcollection
-            # But to match the desired path structure, we'll use a workaround:
-            # Create the user_id document if it doesn't exist, then use a subcollection
-            # Actually, let's try a different approach: use the user_id document itself with a subcollection
-            # but name it in a way that appears as if it's directly under user_id
+            # Since Firestore doesn't allow collections directly under collections,
+            # we'll use a subcollection structure where user_id appears as a collection-like grouping
+            # Structure: sponsorship_checks (top-level collection) > {user_id} (document) > checks (subcollection) > {doc_id} (document)
+            # This allows us to group documents by user_id while maintaining Firestore's data model
             
-            # First, ensure the user_id document exists in sponsorship_checks
+            # First, ensure the user_id document exists in sponsorship_checks (this acts as a "collection" grouping)
             user_doc_ref = db.collection("sponsorship_checks").document(user_id)
             user_doc = user_doc_ref.get()
             if not user_doc.exists:
-                print(f"[Firebase] [SPONSORSHIP] [INFO] Creating user document: sponsorship_checks/{user_id}")
-                user_doc_ref.set({"createdAt": datetime.now()}, merge=True)
+                print(f"[Firebase] [SPONSORSHIP] [INFO] Creating user grouping document: sponsorship_checks/{user_id}")
+                user_doc_ref.set({"userId": user_id, "createdAt": datetime.now()}, merge=True)
             
-            # Now create a subcollection directly under user_id
-            # We'll use an empty string or minimal name, but Firestore requires a name
-            # Actually, we can't avoid the subcollection name in Firestore
-            # The path will be: sponsorship_checks/{user_id}/_/{doc_id}
-            # But to make it appear as sponsorship_checks/{user_id}/{doc_id} in console,
-            # we need to use a single-character or minimal subcollection name
-            
-            # Use a minimal subcollection name that's as short as possible
-            # Note: Firestore console may show this differently, but the data structure is correct
+            # Create subcollection under user_id document
+            # Using "checks" as the subcollection name (can be changed to any name)
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] Creating collection reference...")
-            # Try using just the document reference and then adding directly
-            # Actually, we must use a subcollection - let's use the shortest possible name
-            collection_ref = db.collection("sponsorship_checks").document(user_id).collection("_")
-            print(f"[Firebase] [SPONSORSHIP] [OK] Collection reference created: sponsorship_checks/{user_id}/_")
+            collection_ref = db.collection("sponsorship_checks").document(user_id).collection("checks")
+            print(f"[Firebase] [SPONSORSHIP] [OK] Collection reference created: sponsorship_checks/{user_id}/checks")
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] Collection ref type: {type(collection_ref)}")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] Firestore requires a subcollection name, using '_' as minimal name")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] Path will be: sponsorship_checks/{user_id}/_/<doc_id>")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] In console, navigate to: sponsorship_checks > {user_id} > _")
+            print(f"[Firebase] [SPONSORSHIP] [NOTE] Path structure: sponsorship_checks/{user_id}/checks/{doc_id}")
+            print(f"[Firebase] [SPONSORSHIP] [NOTE] In console: sponsorship_checks > {user_id} > checks > {doc_id}")
             
             # Use add() method which returns (timestamp, document_reference)
             print(f"[Firebase] [SPONSORSHIP] [SAVE] Calling collection_ref.add(document_data)...")
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] About to save document...")
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] Document structure: FLAT (same as job_applications)")
-            print(f"[Firebase] [SPONSORSHIP] [DEBUG] Collection path: sponsorship_checks/{user_id}/_")
+            print(f"[Firebase] [SPONSORSHIP] [DEBUG] Collection path: sponsorship_checks/{user_id}/checks")
             
             # CRITICAL: Save the document and get the result
             try:
@@ -666,8 +654,8 @@ class FirebaseService:
                 raise RuntimeError("Document ID is None or empty after save operation")
             
             print(f"[Firebase] [SPONSORSHIP] [SUCCESS] Document added with ID: {doc_id}")
-            print(f"[Firebase] [SPONSORSHIP] [PATH] sponsorship_checks/{user_id}/_/{doc_id}")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] In Firebase Console, navigate to: sponsorship_checks > {user_id} > _ > {doc_id}")
+            print(f"[Firebase] [SPONSORSHIP] [PATH] sponsorship_checks/{user_id}/checks/{doc_id}")
+            print(f"[Firebase] [SPONSORSHIP] [NOTE] In Firebase Console, navigate to: sponsorship_checks > {user_id} > checks > {doc_id}")
             
             # Verify the document was saved with retry logic
             print(f"[Firebase] [SPONSORSHIP] [VERIFY] Verifying document was saved...")
@@ -692,13 +680,13 @@ class FirebaseService:
                 print(f"[Firebase] [SPONSORSHIP] [DEBUG] Document contents:")
                 for key, value in doc_dict.items():
                     print(f"  {key}: {value} (type: {type(value)})")
-                print(f"[Firebase] [SPONSORSHIP] [FINAL] Document successfully saved and verified at: sponsorship_checks/{user_id}/_/{doc_id}")
+                print(f"[Firebase] [SPONSORSHIP] [FINAL] Document successfully saved and verified at: sponsorship_checks/{user_id}/checks/{doc_id}")
             else:
                 error_msg = f"Document not found after saving (doc_id: {doc_id})"
                 print(f"[Firebase] [SPONSORSHIP] [WARNING] {error_msg}")
                 print(f"[Firebase] [SPONSORSHIP] [ERROR] This indicates the save operation failed silently!")
                 # Don't raise here - let the caller handle it, but log clearly
-                print(f"[Firebase] [SPONSORSHIP] [INFO] Check Firestore Console at: sponsorship_checks/{user_id}/_/{doc_id}")
+                print(f"[Firebase] [SPONSORSHIP] [INFO] Check Firestore Console at: sponsorship_checks/{user_id}/checks/{doc_id}")
             
             print(f"{'='*70}\n")
             return doc_id

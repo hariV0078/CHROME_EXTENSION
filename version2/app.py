@@ -1765,8 +1765,8 @@ Be honest about the fit level based on the score.
                         print(f"\n{'='*80}")
                         print(f"[Sponsorship] ✓ SUCCESS - Saved sponsorship info to Firestore")
                         print(f"[Sponsorship] [DOC_ID] {doc_id}")
-                        print(f"[Sponsorship] [PATH] sponsorship_checks/{sponsorship_user_id}/_/{doc_id}")
-                        print(f"[Sponsorship] [NOTE] In Firebase Console: sponsorship_checks > {sponsorship_user_id} > _ > {doc_id}")
+                        print(f"[Sponsorship] [PATH] sponsorship_checks/{sponsorship_user_id}/checks/{doc_id}")
+                        print(f"[Sponsorship] [NOTE] In Firebase Console: sponsorship_checks > {sponsorship_user_id} > checks > {doc_id}")
                         print(f"{'='*80}\n")
                     else:
                         print("[Sponsorship] ⚠️  User ID not found, skipping Firestore save")
