@@ -614,8 +614,8 @@ class FirebaseService:
             collection_ref = db.collection("sponsorship_checks").document(user_id).collection("checks")
             print(f"[Firebase] [SPONSORSHIP] [OK] Collection reference created: sponsorship_checks/{user_id}/checks")
             print(f"[Firebase] [SPONSORSHIP] [DEBUG] Collection ref type: {type(collection_ref)}")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] Path structure: sponsorship_checks/{user_id}/checks/{doc_id}")
-            print(f"[Firebase] [SPONSORSHIP] [NOTE] In console: sponsorship_checks > {user_id} > checks > {doc_id}")
+            print(f"[Firebase] [SPONSORSHIP] [NOTE] Path structure: sponsorship_checks/{user_id}/_/<doc_id>")
+            print(f"[Firebase] [SPONSORSHIP] [NOTE] In console: sponsorship_checks > {user_id} > _ > <doc_id>")
             
             # Use add() method which returns (timestamp, document_reference)
             print(f"[Firebase] [SPONSORSHIP] [SAVE] Calling collection_ref.add(document_data)...")
