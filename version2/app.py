@@ -282,6 +282,68 @@ def clean_company_name(company: Optional[str]) -> Optional[str]:
     return company
 
 
+def clean_summary_text(text: Optional[str]) -> str:
+    """
+    Clean summary text to remove markdown formatting inconsistencies like "Name**: Value".
+    
+    Args:
+        text: Raw summary text that may contain markdown formatting
+        
+    Returns:
+        Cleaned summary text
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Remove leading/trailing whitespace
+    text = text.strip()
+    
+    # Remove markdown code fences
+    text = re.sub(r'^```[\w]*\s*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n?```\s*$', '', text, flags=re.MULTILINE)
+    
+    # Remove patterns like "Name**:", "**Name**:", "Name:", etc. at the start of lines
+    # This handles cases like "Name**: Clarity" or "**Company**: ABC Corp"
+    text = re.sub(r'^(\*{0,2}(?:Name|Company|Title|Job Title|Position|Role|Location|Salary|Description|Summary|Employer|Organization)\*{0,2}:?\s*)', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    
+    # Remove bold markdown (**text** or __text__)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **text** -> text
+    text = re.sub(r'__([^_]+)__', r'\1', text)  # __text__ -> text
+    
+    # Remove italic markdown (*text* or _text_)
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', text)  # *text* -> text (but not **text**)
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'\1', text)  # _text_ -> text (but not __text__)
+    
+    # Remove standalone asterisks at line starts/ends
+    text = re.sub(r'^\*+\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*\*+$', '', text, flags=re.MULTILINE)
+    
+    # Remove patterns like "**:**" or "**: " at line starts
+    text = re.sub(r'^\*{1,2}:?\s*', '', text, flags=re.MULTILINE)
+    
+    # Clean up multiple consecutive asterisks
+    text = re.sub(r'\*{3,}', '', text)
+    
+    # Remove markdown headers (# ## ###)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # Remove markdown list markers that might be left over
+    text = re.sub(r'^[\*\-\+]\s+', '', text, flags=re.MULTILINE)
+    
+    # Normalize whitespace (multiple spaces/newlines)
+    text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single space
+    text = re.sub(r'\n{3,}', '\n\n', text)  # Multiple newlines to double newline
+    
+    # Remove leading/trailing whitespace from each line
+    lines = [line.strip() for line in text.split('\n')]
+    text = '\n'.join(lines)
+    
+    # Final strip
+    text = text.strip()
+    
+    return text
+
+
 def extract_job_title_from_content(content: str, fallback_title: Optional[str] = None) -> Optional[str]:
     """
     Extract job title from scraped content using multiple strategies.
@@ -365,8 +427,10 @@ def extract_company_name_from_content(content: str, fallback_company: Optional[s
     content_lower = content.lower()
     
     # Pattern 1: Look for "Company:", "Employer:", "Organization:" patterns
+    # Also look for "by [Company]" pattern (common in job postings like "7 November by Michael Page Technology")
     patterns = [
         r'(?:company|employer|organization|organisation)[:\s]+([A-Z][A-Za-z0-9\s&.,\-]{2,50})',
+        r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services))?)',
         r'at\s+([A-Z][A-Za-z0-9\s&.,\-]{2,50})\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings)',
         r'([A-Z][A-Za-z0-9\s&.,\-]{2,50})\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation)',
         r'working\s+(?:at|for|with)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,50})',
@@ -1172,11 +1236,48 @@ Extract every skill, tool, and technology mentioned. Calculate total years from 
             job_link = new_format_jobs.get("joblink", "")
             job_data = new_format_jobs.get("jobdata", "")
             
+            # Try to extract company name from job_data BEFORE creating scraped_data
+            # This helps the summarizer by providing initial hints
+            pre_extracted_company = None
+            try:
+                # Try multiple extraction strategies
+                # Strategy 1: Look for "by [Company]" pattern (common in job postings)
+                by_pattern = r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services))?)'
+                by_match = re.search(by_pattern, job_data[:2000], re.IGNORECASE)
+                if by_match:
+                    potential_company = by_match.group(1).strip()
+                    cleaned = clean_company_name(potential_company)
+                    if cleaned and len(cleaned) >= 2:
+                        pre_extracted_company = cleaned
+                        print(f"[Company Extraction] Pre-extracted from 'by' pattern: {pre_extracted_company}")
+                
+                # Strategy 2: Use extract_company_name_from_content if Strategy 1 didn't work
+                if not pre_extracted_company:
+                    extracted = extract_company_name_from_content(job_data[:2000], None)
+                    if extracted and extracted != "Company name not available in posting" and len(extracted) >= 2:
+                        pre_extracted_company = extracted
+                        print(f"[Company Extraction] Pre-extracted from content: {pre_extracted_company}")
+                
+                # Strategy 3: Try sponsorship_checker extract_company_name
+                if not pre_extracted_company:
+                    try:
+                        from sponsorship_checker import extract_company_name
+                        extracted = extract_company_name(job_data[:2000])
+                        if extracted:
+                            cleaned = clean_company_name(extracted)
+                            if cleaned and len(cleaned) >= 2:
+                                pre_extracted_company = cleaned
+                                print(f"[Company Extraction] Pre-extracted from sponsorship_checker: {pre_extracted_company}")
+                    except Exception as e:
+                        print(f"[Company Extraction] Error using sponsorship_checker: {e}")
+            except Exception as e:
+                print(f"[Company Extraction] Error in pre-extraction: {e}")
+            
             # Create scraped_data structure for summarizer
             scraped_data = {
                 "url": job_link,
                 "job_title": raw_job_title,
-                "company_name": None,  # Will be extracted by summarizer
+                "company_name": pre_extracted_company,  # Pre-extracted company name to help summarizer
                 "location": None,
                 "description": job_data,
                 "qualifications": None,
@@ -1228,17 +1329,25 @@ Extract every skill, tool, and technology mentioned. Calculate total years from 
             if not final_job_title:
                 final_job_title = "Job title not available in posting"
             
-            # Extract and clean company name - prioritize summarized data
+            # Extract and clean company name - prioritize summarized data, then pre-extracted
             summarized_company = summarized_data.get("company_name")
             final_company = None
             
             # Priority 1: Use summarized company if available and valid
             if summarized_company:
                 cleaned = clean_company_name(summarized_company)
+                if cleaned and len(cleaned) >= 2 and cleaned.lower() not in ["not specified", "unknown", "none"]:
+                    final_company = cleaned
+                    print(f"[Company Extraction] Using summarized company: {final_company}")
+            
+            # Priority 2: Use pre-extracted company if summarized didn't work
+            if not final_company and pre_extracted_company:
+                cleaned = clean_company_name(pre_extracted_company)
                 if cleaned and len(cleaned) >= 2:
                     final_company = cleaned
+                    print(f"[Company Extraction] Using pre-extracted company: {final_company}")
             
-            # Priority 2: Try extracting from job title (e.g., "Johnsons Volkswagen Liverpool Service Advisor")
+            # Priority 3: Try extracting from job title (e.g., "Johnsons Volkswagen Liverpool Service Advisor")
             if not final_company:
                 title_parts = raw_job_title.split(" - ")[0]  # Remove " - job post" suffix
                 location_keywords = ["liverpool", "london", "manchester", "birmingham", "leeds", "glasgow", "edinburgh", "bristol", "cardiff"]
@@ -1253,14 +1362,15 @@ Extract every skill, tool, and technology mentioned. Calculate total years from 
                                 print(f"[Company Extraction] Extracted from title: {final_company}")
                                 break
             
-            # Priority 3: Try extraction from content (first 1000 chars only)
+            # Priority 4: Try extraction from content (first 2000 chars)
             if not final_company:
-                first_1000 = job_data[:1000] if job_data else ""
-                extracted = extract_company_name_from_content(first_1000, None)
+                first_2000 = job_data[:2000] if job_data else ""
+                extracted = extract_company_name_from_content(first_2000, None)
                 if extracted and extracted != "Company name not available in posting" and len(extracted) >= 2:
                     final_company = extracted
+                    print(f"[Company Extraction] Extracted from content: {final_company}")
             
-            # Priority 4: Try sponsorship_checker
+            # Priority 5: Try sponsorship_checker
             if not final_company:
                 try:
                     from sponsorship_checker import extract_company_name
@@ -1269,6 +1379,7 @@ Extract every skill, tool, and technology mentioned. Calculate total years from 
                         cleaned = clean_company_name(extracted)
                         if cleaned and len(cleaned) >= 2:
                             final_company = cleaned
+                            print(f"[Company Extraction] Extracted from sponsorship_checker: {final_company}")
                 except Exception as e:
                     print(f"[Company Extraction] Error extracting from job data: {e}")
             
@@ -1722,10 +1833,14 @@ Be honest about the fit level based on the score.
                 
                 text = text.strip()
                 
-                # Strip markdown code fences if present
+                # Clean markdown formatting inconsistencies
+                text = clean_summary_text(text)
+                
+                # Strip markdown code fences if present (additional check after cleaning)
                 if text.startswith("```"):
                     lines = text.split("\n")
                     text = "\n".join(lines[1:-1])
+                    text = text.strip()
                 
                 # Truncate at sentence boundary if too long (max 3000 chars, but prefer complete sentences)
                 max_length = 3000
@@ -1804,7 +1919,6 @@ Be honest about the fit level based on the score.
                 requirements_met=entry["requirements_met"],
                 total_requirements=entry["total_requirements"],
                 scraped_summary=SCRAPE_CACHE.get(str(job.url), {}).get('scraped_summary'),
-                visa_scholarship_info=visa_scholarship_info,
             )
 
         # Generate summaries sequentially
@@ -1883,7 +1997,6 @@ Be honest about the fit level based on the score.
                             "requirements_met": job.requirements_met,
                             "total_requirements": job.total_requirements,
                             "scraped_summary": job.scraped_summary,
-                            "visa_scholarship_info": job.visa_scholarship_info,
                         }
                         for job in matched_jobs
                     ]
@@ -1948,14 +2061,21 @@ Be honest about the fit level based on the score.
                 sponsorship_result = check_sponsorship(company_name, job_content)
                 
                 # Get company info from web using Phi agent
+                # Always fetch if company not in CSV, or optionally fetch additional info if in CSV
                 company_info_summary = None
                 matched_company_name = sponsorship_result.get('company_name') or company_name
+                found_in_csv = sponsorship_result.get('found_in_csv', False)
+                
+                # Fetch web info if company not in CSV (required) or if in CSV (optional additional info)
                 if matched_company_name and matched_company_name.lower() not in ["unknown", "not specified", "none", ""]:
                     try:
                         # Get OpenAI API key from settings
                         openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
                         if openai_key:
-                            print(f"[Sponsorship] Fetching additional company information from web...")
+                            if not found_in_csv:
+                                print(f"[Sponsorship] Company not in CSV - fetching company information and sponsorship availability from web...")
+                            else:
+                                print(f"[Sponsorship] Fetching additional company information from web...")
                             company_info_summary = get_company_info_from_web(matched_company_name, openai_key)
                         else:
                             print(f"[Sponsorship] OpenAI API key not available, skipping web search")
@@ -1968,9 +2088,14 @@ Be honest about the fit level based on the score.
                 enhanced_summary = base_summary
                 
                 if company_info_summary:
-                    # Append company info to the summary
-                    enhanced_summary = f"{base_summary}\n\nCompany Information:\n{company_info_summary}"
-                    print(f"[Sponsorship] Enhanced summary with company information from web")
+                    if not found_in_csv:
+                        # If not in CSV, the web info is the primary source for sponsorship info
+                        enhanced_summary = f"{base_summary}\n\nCompany Information and Sponsorship Availability:\n{company_info_summary}"
+                        print(f"[Sponsorship] Enhanced summary with company information and sponsorship availability from web")
+                    else:
+                        # If in CSV, web info is additional context
+                        enhanced_summary = f"{base_summary}\n\nCompany Information:\n{company_info_summary}"
+                        print(f"[Sponsorship] Enhanced summary with company information from web")
                 
                 sponsorship_info = SponsorshipInfo(
                     company_name=sponsorship_result.get('company_name'),
@@ -2404,9 +2529,8 @@ async def extract_job_info(
                     else:
                         description = str(summary_response).strip()
                     
-                    description = re.sub(r"^```[\w]*\n", "", description)
-                    description = re.sub(r"\n```$", "", description)
-                    description = description.strip()
+                    # Clean markdown formatting inconsistencies
+                    description = clean_summary_text(description)
                     
                     print(f"[AGENT] [SUMMARIZER] Generated description ({len(description)} characters)")
 
@@ -2506,7 +2630,7 @@ async def extract_job_info(
                 except Exception as ai_error:
                     print(f"AI fallback failed (non-fatal): {ai_error}")
 
-        job_info["visa_scholarship_info"] = visa_info or "Not specified"
+        # Note: visa_scholarship_info is kept internally for sponsorship checking but not returned in response
         job_info.setdefault("success", True)
         job_info.setdefault("error", None)
 
@@ -2653,109 +2777,424 @@ async def playwright_scrape(
         
         # STEP 3: Scrape with Playwright
         def scrape_with_playwright(url: str) -> Dict[str, Any]:
-            """Synchronous Playwright scraping function."""
+            """Synchronous Playwright scraping function with enhanced extraction."""
             import re
             
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
-                page.goto(url)
                 
-                # Wait for page to load
-                page.wait_for_load_state("networkidle", timeout=30000)
+                # Set a realistic viewport and user agent
+                page.set_viewport_size({"width": 1920, "height": 1080})
+                page.set_extra_http_headers({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                })
+                
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                except:
+                    # If initial load fails, try with networkidle
+                    try:
+                        page.goto(url, wait_until="networkidle", timeout=60000)
+                    except:
+                        pass
+                
+                # Wait for page to load with multiple strategies
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except:
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=30000)
+                    except:
+                        pass
+                
+                # Additional wait for dynamic content (especially for LinkedIn)
+                import time
+                time.sleep(3)  # Give JavaScript time to render
+                
+                # Try to wait for specific elements that indicate the page is loaded
+                try:
+                    # Wait for either job title or description to appear
+                    page.wait_for_selector('h1, .jobs-description, .job-description, [data-test-id*="description"]', timeout=10000)
+                except:
+                    pass  # Continue even if selectors don't appear
                 
                 # Get page title
                 page_title = page.title()
                 current_url = page.url
                 detected_portal = detect_portal(current_url)
                 html_content = page.content()
-                text_content = page.inner_text("body")
                 
-                # Extract job title
+                # Get text content - try multiple methods
+                text_content = ""
+                try:
+                    text_content = page.inner_text("body")
+                except:
+                    try:
+                        # Fallback: get text from main content area
+                        main_content = page.query_selector("main") or page.query_selector("#main") or page.query_selector("body")
+                        if main_content:
+                            text_content = main_content.inner_text()
+                    except:
+                        # Last resort: extract from HTML
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(html_content, 'lxml')
+                        text_content = soup.get_text(separator='\n', strip=True)
+                
+                # Extract job title with more selectors and strategies
+                # Includes selectors from content script for LinkedIn, Indeed, Internshala, etc.
                 job_title = None
                 title_selectors = [
+                    # LinkedIn selectors
+                    '.job-details-jobs-unified-top-card__job-title',
+                    '.jobs-unified-top-card__job-title',
                     '.jobs-details-top-card__job-title',
                     'h1[data-test-id*="job-title"]',
                     '.topcard__title',
+                    'h1.jobs-details-top-card__job-title',
+                    'h1.job-title',
+                    # Internshala selectors
+                    '.heading_2_4',
+                    '.heading_4_5.profile',
+                    # Indeed selectors
+                    '.jobsearch-JobInfoHeader-title',
+                    # Civil Service Jobs
+                    '#id_common_page_title_h1',
+                    '.csr-page-title h1',
+                    # Reed
+                    '[data-qa="job-title"]',
+                    '.job-title-block_title__9fRYc',
+                    # StudentJob
+                    'h1[itemprop="title"]',
+                    'p[itemprop="title"]',
+                    '.h4[itemprop="title"]',
+                    '.job-opening__title h1',
+                    # JustEngineers/Jobsite/TotalJobs
+                    '[data-at="header-job-title"]',
+                    # JobsACUK
+                    '.j-advert__title',
+                    # Generic fallbacks
                     'h1',
-                    '.job-title'
+                    '.job-title',
+                    '[data-test-id="job-title"]',
+                    'h2.job-title'
                 ]
                 for selector in title_selectors:
                     try:
                         element = page.query_selector(selector)
                         if element:
                             job_title = element.inner_text().strip()
-                            break
+                            if job_title and len(job_title) > 3 and len(job_title) < 200:
+                                # Validate it's not a search page title
+                                if not re.search(r'\d+[,\d]*\+?\s*jobs?\s+in', job_title, re.I):
+                                    break
                     except:
                         continue
                 
-                # Extract company name
+                # Extract company name with content script selectors
                 company_name = None
                 company_selectors = [
+                    # LinkedIn selectors
                     '.jobs-details-top-card__company-name',
+                    '.jobs-details-top-card__company-name-link',
+                    '.jobs-details-top-card__company-info',
                     '[data-test-id*="company"]',
+                    '[data-test-id="job-poster"]',
                     '.topcard__org-name',
+                    # Generic
                     '.company-name',
                     'a[href*="/company/"]',
-                    '.jobs-details-top-card__company-info'
+                    # JobsACUK
+                    '.j-advert__employer',
+                    # JSON-LD fallback (will be checked later)
                 ]
                 for selector in company_selectors:
                     try:
                         element = page.query_selector(selector)
                         if element:
                             company_name = element.inner_text().strip()
-                            break
+                            if company_name and len(company_name) > 2 and len(company_name) < 100:
+                                break
                     except:
                         continue
+                
+                # Try to extract from JSON-LD if not found
+                if not company_name:
+                    try:
+                        scripts = page.query_selector_all('script[type="application/ld+json"]')
+                        for script in scripts:
+                            try:
+                                data = json.loads(script.inner_text())
+                                if data.get('hiringOrganization', {}).get('name'):
+                                    company_name = data['hiringOrganization']['name']
+                                    break
+                            except:
+                                continue
+                    except:
+                        pass
                 
                 if not company_name and job_title:
                     company_match = re.search(rf'{re.escape(job_title)}\n([A-Za-z0-9\s&]+)\s+([A-Za-z,\s]+,\s*[A-Za-z,\s]+)', text_content)
                     if company_match:
                         company_name = company_match.group(1).strip()
                 
-                # Extract job description
+                # Extract job description with enhanced selectors from content script
                 description = None
                 desc_selectors = [
+                    # LinkedIn selectors (from content script)
+                    '.jobs-search__job-details--wrapper',
+                    '.job-view-layout',
+                    '.jobs-details',
+                    '.jobs-details__main-content',
+                    '#job-details',
+                    '.jobs-description__container',
+                    '.jobs-description-content',
                     '.jobs-description__text',
                     '.jobs-box__html-content',
+                    # Internshala selectors
+                    '.individual_internship_header',
+                    '.individual_internship_details',
+                    '.tags_container_outer',
+                    '.applications_message_container',
+                    '.internship_details',
+                    '.activity_section',
+                    '.detail_view',
+                    # Indeed selectors
+                    '#jobDescriptionText',
+                    '.jobsearch-JobComponent-description',
+                    '#jobsearch-ViewjobPaneWrapper',
+                    '.jobsearch-embeddedBody',
+                    '.jobsearch-BodyContainer',
+                    '.jobsearch-JobComponent',
+                    '.fastviewjob',
+                    # Civil Service Jobs
+                    '.vac_display_panel_main_inner',
+                    '.vac_display_panel_side_inner',
+                    '#main-content',
+                    # Reed
+                    '[data-qa="job-details-drawer-modal-body"]',
+                    # StudentJob
+                    '[data-job-openings-sticky-title-target="jobOpeningContent"]',
+                    '.job-opening__body',
+                    '.job-opening__description',
+                    '.printable',
+                    '.card__body',
+                    '.sticky-title__moving-target',
+                    # JustEngineers/Jobsite/TotalJobs
+                    '[data-at="job-ad-header"]',
+                    '[data-at="job-ad-content"]',
+                    '.at-section-text-jobDescription',
+                    '.job-ad-display-ofzx2',
+                    '.job-ad-display-cl9qsc',
+                    '.job-ad-display-kyg8or',
+                    '.job-ad-display-nfizss',
+                    '.listingContentBrandingColor',
+                    '.job-ad-display-1b1is8w',
+                    # Milkround
+                    '[data-at="content-container"]',
+                    "[data-at='section-text-jobDescription']",
+                    "[data-at='section-text-jobDescription-content']",
+                    '.job-ad-display-n10qeq',
+                    '.job-ad-display-tt0ywc',
+                    '.job-ad-display-gro348',
+                    # WorkInStartups
+                    'main.container',
+                    '.ui-adp-content',
+                    '.ui-job-card-info',
+                    '.adp-body',
+                    # CharityJob
+                    '.job-details-summary',
+                    '.job-description-wrapper',
+                    '.job-description',
+                    '.job-organisation-profile',
+                    '.job-attachments',
+                    '.job-post-summary',
+                    '.job-detail-foot-note',
+                    # JobsACUK
+                    '.j-advert-details__container',
+                    '#job-description',
+                    # Generic fallbacks
                     '[data-test-id*="description"]',
                     '.job-description',
                     '#job-description',
                     '.jobs-description-content__text',
-                    'div[data-test-id*="job-details"]'
+                    'div[data-test-id*="job-details"]',
+                    '.jobs-description-content',
+                    '[id*="job-details"]',
+                    '[class*="job-description"]',
+                    '[class*="description"]',
+                    'section[data-test-id*="description"]',
+                    'div.jobs-description'
                 ]
+                
                 for selector in desc_selectors:
                     try:
                         element = page.query_selector(selector)
                         if element:
                             description = element.inner_text().strip()
-                            break
+                            if description and len(description) > 100:  # Ensure we got substantial content
+                                break
                     except:
                         continue
                 
-                if not description:
-                    desc_match = re.search(r'Job Description\s*\n\n(.*?)(?:\n\nAdditional Information|\n\nShow more|\Z)', text_content, re.DOTALL)
-                    if desc_match:
-                        description = desc_match.group(1).strip()
-                    else:
-                        desc_match = re.search(r'Job Description\s*\n\n(.*)', text_content, re.DOTALL)
+                # If still no description, try getting HTML and extracting from multiple elements
+                # Use content script approach: collect HTML from multiple wrapper elements
+                if not description or len(description) < 100:
+                    try:
+                        # Content script approach: collect HTML from multiple wrappers and merge
+                        wrapper_selectors = [
+                            # LinkedIn wrappers (from content script)
+                            '.jobs-search__job-details--wrapper',
+                            '.job-view-layout',
+                            '.jobs-details',
+                            '.jobs-details__main-content',
+                            # Internshala wrappers
+                            '.individual_internship_header',
+                            '.individual_internship_details',
+                            '.detail_view',
+                            # Indeed wrappers
+                            '#jobDescriptionText',
+                            '.jobsearch-JobComponent-description',
+                            '#jobsearch-ViewjobPaneWrapper',
+                            # Civil Service Jobs
+                            '.vac_display_panel_main_inner',
+                            '.vac_display_panel_side_inner',
+                            # Reed
+                            '[data-qa="job-details-drawer-modal-body"]',
+                            # StudentJob
+                            '[data-job-openings-sticky-title-target="jobOpeningContent"]',
+                            '.job-opening__body',
+                            # JustEngineers/Jobsite/TotalJobs
+                            '[data-at="job-ad-content"]',
+                            # WorkInStartups
+                            'main.container',
+                            # CharityJob
+                            '.job-description-wrapper',
+                            # JobsACUK
+                            '.j-advert-details__container'
+                        ]
+                        
+                        html_parts = []
+                        seen_elements = set()
+                        
+                        for wrapper_sel in wrapper_selectors:
+                            try:
+                                elements = page.query_selector_all(wrapper_sel)
+                                for elem in elements:
+                                    # Use element's unique identifier to avoid duplicates
+                                    elem_id = id(elem)
+                                    if elem_id not in seen_elements:
+                                        seen_elements.add(elem_id)
+                                        try:
+                                            # Get innerHTML using evaluate
+                                            html = elem.evaluate('el => el.innerHTML')
+                                            if html and html.strip():
+                                                html_parts.append(html)
+                                        except:
+                                            # Fallback to inner_text if inner_html fails
+                                            try:
+                                                text = elem.inner_text().strip()
+                                                if text and len(text) > 100:
+                                                    html_parts.append(text)
+                                            except:
+                                                continue
+                            except:
+                                continue
+                        
+                        # If we collected HTML parts, merge and extract text
+                        if html_parts:
+                            merged_html = '\n\n'.join(html_parts)
+                            # Convert HTML to text (similar to content script)
+                            from bs4 import BeautifulSoup
+                            soup = BeautifulSoup(merged_html, 'lxml')
+                            # Remove script and style elements
+                            for script in soup(["script", "style"]):
+                                script.decompose()
+                            # Get text
+                            merged_text = soup.get_text(separator='\n', strip=True)
+                            # Clean up (similar to content script clean function)
+                            merged_text = re.sub(r'\n{3,}', '\n\n', merged_text)
+                            merged_text = re.sub(r'[ \t]{2,}', ' ', merged_text)
+                            merged_text = merged_text.replace('\u00A0', ' ').strip()
+                            
+                            if len(merged_text) > 100:
+                                description = merged_text
+                        
+                        # Fallback: query all description-related elements
+                        if not description or len(description) < 100:
+                            desc_elements = page.query_selector_all('[class*="description"], [id*="description"], [data-test-id*="description"]')
+                            for elem in desc_elements:
+                                try:
+                                    text = elem.inner_text().strip()
+                                    if text and len(text) > 100:
+                                        description = text
+                                        break
+                                except:
+                                    continue
+                    except Exception as e:
+                        print(f"[DEBUG] Error in wrapper extraction: {e}")
+                        pass
+                
+                # Fallback: Extract from text content using regex
+                if not description or len(description) < 100:
+                    # Look for "Job Description" or "About the job" sections
+                    desc_patterns = [
+                        r'(?:Job Description|About the job|Description)\s*\n\n(.*?)(?:\n\n(?:Additional Information|Show more|Qualifications|Requirements|Similar jobs|Referrals)|\Z)',
+                        r'(?:Job Description|About the job|Description)\s*\n\n(.*)',
+                    ]
+                    for pattern in desc_patterns:
+                        desc_match = re.search(pattern, text_content, re.DOTALL | re.IGNORECASE)
                         if desc_match:
                             description = desc_match.group(1).strip()
-                            description = re.split(r'\n\nSimilar jobs|\n\nReferrals', description)[0]
+                            if len(description) > 100:
+                                break
+                
+                # Last resort: Extract from main content area
+                if not description or len(description) < 100:
+                    try:
+                        # Get main content area
+                        main = page.query_selector("main") or page.query_selector("#main") or page.query_selector("body")
+                        if main:
+                            main_text = main.inner_text()
+                            # Try to extract meaningful content (skip navigation, headers, etc.)
+                            lines = main_text.split('\n')
+                            desc_lines = []
+                            in_description = False
+                            for line in lines:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                # Skip short lines that are likely navigation
+                                if len(line) < 20 and not in_description:
+                                    continue
+                                # Start collecting when we see description-like content
+                                if any(keyword in line.lower() for keyword in ['description', 'about', 'role', 'responsibilities', 'requirements']):
+                                    in_description = True
+                                if in_description:
+                                    desc_lines.append(line)
+                                    if len('\n'.join(desc_lines)) > 500:  # Got enough content
+                                        break
+                            if desc_lines:
+                                description = '\n'.join(desc_lines)
+                    except:
+                        pass
                 
                 # Extract location
                 location = None
                 location_selectors = [
                     '.jobs-details-top-card__primary-description-without-tagline',
                     '.jobs-details-top-card__bullet',
-                    '[data-test-id*="location"]'
+                    '[data-test-id*="location"]',
+                    '.job-criteria__text',
+                    '[data-test-id="job-location"]'
                 ]
                 for selector in location_selectors:
                     try:
                         element = page.query_selector(selector)
                         if element:
                             location = element.inner_text().strip()
-                            break
+                            if location:
+                                break
                     except:
                         continue
                 
@@ -2777,13 +3216,108 @@ async def playwright_scrape(
                     if skills_match:
                         skills = skills_match.group(1).strip()
                 
+                # Extract structured data from JSON-LD (like content script)
+                json_ld_data = ""
+                try:
+                    scripts = page.query_selector_all('script[type="application/ld+json"]')
+                    structured_lines = []
+                    
+                    for script in scripts:
+                        try:
+                            script_text = script.inner_text()
+                            if not script_text:
+                                continue
+                            data = json.loads(script_text)
+                            
+                            # Extract job posting data
+                            if data.get("@type") == "JobPosting" or "JobPosting" in str(data.get("@type", [])):
+                                if data.get("title") and not job_title:
+                                    job_title = data["title"]
+                                if data.get("hiringOrganization", {}).get("name") and not company_name:
+                                    company_name = data["hiringOrganization"]["name"]
+                                if data.get("jobLocation") and not location:
+                                    loc = data["jobLocation"]
+                                    if isinstance(loc, list):
+                                        loc = loc[0] if loc else {}
+                                    if isinstance(loc, dict):
+                                        addr = loc.get("address", {})
+                                        if isinstance(addr, dict):
+                                            loc_parts = [
+                                                addr.get("addressLocality"),
+                                                addr.get("addressRegion"),
+                                                addr.get("postalCode"),
+                                                addr.get("addressCountry")
+                                            ]
+                                            location = ", ".join([p for p in loc_parts if p])
+                                
+                                # Build structured data string
+                                if data.get("title"):
+                                    structured_lines.append(f"Title: {data['title']}")
+                                if data.get("hiringOrganization", {}).get("name"):
+                                    structured_lines.append(f"Company: {data['hiringOrganization']['name']}")
+                                if data.get("datePosted"):
+                                    structured_lines.append(f"Posted: {data['datePosted']}")
+                                if data.get("validThrough"):
+                                    structured_lines.append(f"Apply By: {data['validThrough']}")
+                                if data.get("employmentType"):
+                                    emp_type = data["employmentType"]
+                                    if isinstance(emp_type, list):
+                                        emp_type = ", ".join(emp_type)
+                                    structured_lines.append(f"Employment: {emp_type}")
+                                if data.get("baseSalary"):
+                                    salary = data["baseSalary"]
+                                    if isinstance(salary, dict) and salary.get("value"):
+                                        val = salary["value"]
+                                        if isinstance(val, dict):
+                                            currency = salary.get("currency", "")
+                                            min_val = val.get("minValue") or val.get("value")
+                                            max_val = val.get("maxValue")
+                                            unit = val.get("unitText", "")
+                                            if max_val:
+                                                structured_lines.append(f"Salary: {currency} {min_val} - {max_val} / {unit}")
+                                            else:
+                                                structured_lines.append(f"Salary: {currency} {min_val} / {unit}")
+                                if data.get("skills"):
+                                    skills_data = data["skills"]
+                                    if isinstance(skills_data, list):
+                                        skills_str = ", ".join(skills_data)
+                                    else:
+                                        skills_str = str(skills_data)
+                                    structured_lines.append(f"Skills: {skills_str}")
+                                if data.get("industry"):
+                                    structured_lines.append(f"Industry: {data['industry']}")
+                                if data.get("totalJobOpenings"):
+                                    structured_lines.append(f"Openings: {data['totalJobOpenings']}")
+                            
+                            # Also add raw JSON for reference
+                            json_ld_data += "\n" + json.dumps(data, indent=2)
+                            
+                        except:
+                            continue
+                    
+                    # Add structured data to description if we have it
+                    if structured_lines:
+                        structured_text = "\n\n— Structured Data (JSON-LD) —\n" + "\n".join(structured_lines)
+                        if description:
+                            description = description + structured_text
+                        else:
+                            description = structured_text
+                    
+                except Exception as json_error:
+                    print(f"[DEBUG] Error extracting JSON-LD: {json_error}")
+                
+                # Final description: merge description with JSON-LD raw if available
+                final_description = description or text_content[:5000]
+                if json_ld_data.strip() and len(json_ld_data) < 5000:
+                    final_description = final_description + "\n\n--- JSON-LD Raw ---\n" + json_ld_data
+                
                 scraped_data = {
                     "url": current_url,
                     "title": page_title,
                     "job_title": job_title,
                     "company_name": company_name,
                     "location": location,
-                    "description": description,
+                    "description": final_description,
                     "qualifications": qualifications,
                     "suggested_skills": skills,
                     "text_content": text_content,
@@ -2795,23 +3329,295 @@ async def playwright_scrape(
             
             return scraped_data
         
-        # Run Playwright scraping in thread pool
-        scraped_data = await asyncio.to_thread(scrape_with_playwright, url)
-        portal = scraped_data.get("portal") or detect_portal(url)
-        authorized_sponsor = is_authorized_sponsor(scraped_data.get("company_name"))
+        # STEP 3: Normalize URL (extract actual job URL from search URLs)
+        actual_url = url
+        if "linkedin.com/jobs/search" in url.lower() and "currentJobId" in url:
+            # Extract job ID from LinkedIn search URL
+            import urllib.parse
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            job_id = params.get("currentJobId", [None])[0]
+            if job_id:
+                actual_url = f"https://www.linkedin.com/jobs/view/{job_id}"
+                print(f"[INFO] Detected LinkedIn search URL, converting to job posting URL: {actual_url}")
         
-        # Detect blocking pages (e.g., Cloudflare)
-        block_indicators = ["request blocked", "you have been blocked", "cloudflare"]
-        text_lower = (scraped_data.get("text_content") or "").lower()
-        if any(indicator in text_lower for indicator in block_indicators):
-            error_message = "Scraping blocked by the target site. Please try again later or use a different network."
-            print(f"[WARNING] {error_message}")
+        # STEP 4: Scrape with Playwright (with fallbacks)
+        scraped_data = None
+        scraping_method = "playwright"
+        scraping_error = None
+        
+        try:
+            scraped_data = await asyncio.to_thread(scrape_with_playwright, actual_url)
+            text_content = scraped_data.get("text_content") or scraped_data.get("description") or ""
+            job_title = scraped_data.get("job_title") or scraped_data.get("title") or ""
+            
+            # Validation: Check if we got a valid job posting (not a search page or error page)
+            is_valid_job = True
+            validation_errors = []
+            
+            # Check 1: Sufficient content (minimum 500 characters)
+            if len(text_content) < 500:
+                validation_errors.append(f"Insufficient content ({len(text_content)} chars)")
+                is_valid_job = False
+            
+            # Check 2: Valid job title (not search page indicators)
+            invalid_title_patterns = [
+                r'\d+[,\d]*\+?\s*jobs?\s+in',  # "3,874,000+ Jobs in United States"
+                r'search\s+results?',
+                r'find\s+jobs?',
+                r'job\s+search',
+                r'jobs?\s+on\s+linkedin',
+            ]
+            if job_title:
+                title_lower = job_title.lower()
+                for pattern in invalid_title_patterns:
+                    if re.search(pattern, title_lower, re.I):
+                        validation_errors.append(f"Invalid job title (search page detected): {job_title}")
+                        is_valid_job = False
+                        break
+            
+            # Check 3: Blocking pages
+            block_indicators = ["request blocked", "you have been blocked", "cloudflare", "access denied", "please verify"]
+            text_lower = text_content.lower()
+            if any(indicator in text_lower for indicator in block_indicators):
+                validation_errors.append("Page appears to be blocked")
+                is_valid_job = False
+            
+            # Check 4: Description should not be too short
+            description = scraped_data.get("description") or ""
+            if len(description) < 100:
+                validation_errors.append(f"Description too short ({len(description)} chars)")
+                is_valid_job = False
+            
+            if not is_valid_job:
+                print(f"[WARNING] Playwright validation failed: {', '.join(validation_errors)}")
+                print(f"[WARNING] Trying Firecrawl fallback...")
+                scraping_error = f"Playwright validation failed: {', '.join(validation_errors)}"
+                scraped_data = None
+            else:
+                print(f"[SUCCESS] Playwright validation passed")
+        except Exception as e:
+            print(f"[ERROR] Playwright scraping failed: {e}")
+            scraping_error = str(e)
+            scraped_data = None
+        
+        # FALLBACK 1: Try Firecrawl if Playwright failed or insufficient content
+        if scraped_data is None:
+            print(f"\n{'='*80}")
+            print(f"FIRECRAWL FALLBACK - Attempting to scrape with Firecrawl")
+            print(f"{'='*80}")
+            scraping_method = "firecrawl"
+            
+            try:
+                firecrawl_api_key = settings.firecrawl_api_key or os.getenv("FIRECRAWL_API_KEY")
+                if firecrawl_api_key:
+                    def scrape_with_firecrawl(scrape_url: str) -> Dict[str, Any]:
+                        """Scrape using Firecrawl."""
+                        fc_result = scrape_website_custom(scrape_url, firecrawl_api_key)
+                        
+                        if isinstance(fc_result, dict) and 'error' not in fc_result:
+                            content = str(fc_result.get('content') or fc_result.get('markdown') or fc_result.get('text') or "")
+                            html_content = fc_result.get('html') or ""
+                            metadata = fc_result.get('metadata') or {}
+                            
+                            # Extract title and company from metadata
+                            title = metadata.get('title') or ""
+                            if not title and html_content:
+                                try:
+                                    from bs4 import BeautifulSoup
+                                    soup = BeautifulSoup(html_content, 'lxml')
+                                    if soup.title:
+                                        title = soup.title.string.strip() if soup.title.string else ""
+                                except:
+                                    pass
+                            
+                            # Parse HTML for better extraction if available
+                            job_title = None
+                            company_name = None
+                            description = None
+                            
+                            if html_content:
+                                try:
+                                    from bs4 import BeautifulSoup
+                                    soup = BeautifulSoup(html_content, 'lxml')
+                                    
+                                    # Extract job title
+                                    title_selectors = [
+                                        'h1.job-title', 'h2.job-title', '.job-title',
+                                        '[data-testid*="job-title"]', 'h1', 'h2'
+                                    ]
+                                    for selector in title_selectors:
+                                        elem = soup.select_one(selector)
+                                        if elem and elem.get_text(strip=True):
+                                            job_title = elem.get_text(strip=True)
+                                            break
+                                    
+                                    # Extract company name
+                                    company_selectors = [
+                                        '.company-name', '[class*="Company"]',
+                                        '[data-testid*="company"]', 'a[href*="/company/"]'
+                                    ]
+                                    for selector in company_selectors:
+                                        elem = soup.select_one(selector)
+                                        if elem and elem.get_text(strip=True):
+                                            company_name = elem.get_text(strip=True)
+                                            break
+                                    
+                                    # Extract description
+                                    desc_selectors = [
+                                        '.job-description', '#job-description',
+                                        '[data-testid*="description"]', '.jobs-description'
+                                    ]
+                                    for selector in desc_selectors:
+                                        elem = soup.select_one(selector)
+                                        if elem and elem.get_text(strip=True):
+                                            description = elem.get_text(strip=True)
+                                            break
+                                except Exception as parse_error:
+                                    print(f"[Firecrawl] HTML parsing error: {parse_error}")
+                            
+                            # Use content as description if not found
+                            if not description and content:
+                                description = content[:5000]  # Limit description length
+                            
+                            return {
+                                "url": scrape_url,
+                                "title": title,
+                                "job_title": job_title or title,
+                                "company_name": company_name,
+                                "location": None,
+                                "description": description or content[:2000],
+                                "qualifications": None,
+                                "suggested_skills": None,
+                                "text_content": content,
+                                "html_length": len(html_content),
+                                "portal": detect_portal(scrape_url),
+                            }
+                        else:
+                            raise Exception(fc_result.get('error', 'Unknown Firecrawl error'))
+                    
+                    scraped_data = await asyncio.to_thread(scrape_with_firecrawl, actual_url)
+                    text_content = scraped_data.get("text_content") or scraped_data.get("description") or ""
+                    
+                    # Check if Firecrawl got enough content
+                    if len(text_content) < 500:
+                        print(f"[WARNING] Firecrawl returned insufficient content ({len(text_content)} chars), trying DuckDuckGo fallback...")
+                        scraping_error = f"Insufficient content from Firecrawl ({len(text_content)} chars)"
+                        scraped_data = None
+                    else:
+                        print(f"[SUCCESS] Firecrawl scraped {len(text_content)} characters")
+                else:
+                    print(f"[WARNING] Firecrawl API key not available, skipping Firecrawl fallback")
+            except Exception as e:
+                print(f"[ERROR] Firecrawl scraping failed: {e}")
+                scraping_error = str(e)
+                scraped_data = None
+        
+        # FALLBACK 2: Try DuckDuckGo web search if both Playwright and Firecrawl failed
+        if scraped_data is None:
+            print(f"\n{'='*80}")
+            print(f"DUCKDUCKGO FALLBACK - Attempting web search")
+            print(f"{'='*80}")
+            scraping_method = "duckduckgo"
+            
+            try:
+                openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+                if openai_key:
+                    def search_with_duckduckgo(search_url: str) -> Dict[str, Any]:
+                        """Search for job information using DuckDuckGo."""
+                        from phi.agent import Agent
+                        from phi.model.openai import OpenAIChat
+                        from phi.tools.duckduckgo import DuckDuckGo
+                        
+                        # Create search agent
+                        search_agent = Agent(
+                            name="Job Search Agent",
+                            model=OpenAIChat(id="gpt-4o-mini", api_key=openai_key),
+                            tools=[DuckDuckGo()],
+                            instructions=[
+                                "Search for information about this job posting URL.",
+                                "Extract: job title, company name, job description, requirements, and location.",
+                                "Provide comprehensive information about the job posting.",
+                                "Keep the response detailed and informative."
+                            ],
+                            show_tool_calls=False,
+                            markdown=False,
+                        )
+                        
+                        # Search query
+                        query = f"Find detailed information about this job posting: {search_url}. Extract job title, company name, description, requirements, and location."
+                        
+                        # Get response
+                        response = search_agent.run(query, stream=False)
+                        
+                        # Extract content
+                        search_content = None
+                        if hasattr(response, 'content'):
+                            search_content = str(response.content)
+                        elif isinstance(response, str):
+                            search_content = response
+                        else:
+                            search_content = str(response)
+                        
+                        # Try to extract structured info from the response
+                        job_title = None
+                        company_name = None
+                        description = search_content
+                        
+                        # Simple extraction patterns
+                        title_match = re.search(r'(?:Job Title|Title|Position)[:\s]+([^\n]+)', search_content, re.I)
+                        if title_match:
+                            job_title = title_match.group(1).strip()
+                        
+                        company_match = re.search(r'(?:Company|Employer|Organization)[:\s]+([^\n]+)', search_content, re.I)
+                        if company_match:
+                            company_name = company_match.group(1).strip()
+                        
+                        # Extract description section
+                        desc_match = re.search(r'(?:Description|Job Description|Details)[:\s]+(.*?)(?:\n\n|\n[A-Z][a-z]+:|$)', search_content, re.I | re.DOTALL)
+                        if desc_match:
+                            description = desc_match.group(1).strip()
+                        
+                        return {
+                            "url": search_url,
+                            "title": job_title or "Job Posting",
+                            "job_title": job_title,
+                            "company_name": company_name,
+                            "location": None,
+                            "description": description or search_content[:2000],
+                            "qualifications": None,
+                            "suggested_skills": None,
+                            "text_content": search_content,
+                            "html_length": 0,
+                            "portal": detect_portal(search_url),
+                        }
+                    
+                    scraped_data = await asyncio.to_thread(search_with_duckduckgo, actual_url)
+                    text_content = scraped_data.get("text_content") or scraped_data.get("description") or ""
+                    
+                    if len(text_content) < 200:
+                        print(f"[WARNING] DuckDuckGo returned insufficient content ({len(text_content)} chars)")
+                        scraping_error = f"All scraping methods failed. Last attempt (DuckDuckGo) returned only {len(text_content)} chars"
+                    else:
+                        print(f"[SUCCESS] DuckDuckGo search returned {len(text_content)} characters")
+                else:
+                    print(f"[WARNING] OpenAI API key not available, skipping DuckDuckGo fallback")
+                    scraping_error = "All scraping methods failed. OpenAI API key required for DuckDuckGo fallback"
+            except Exception as e:
+                print(f"[ERROR] DuckDuckGo search failed: {e}")
+                scraping_error = f"All scraping methods failed. Last error: {str(e)}"
+                scraped_data = None
+        
+        # If all methods failed, return error response
+        if scraped_data is None:
+            error_message = scraping_error or "All scraping methods failed"
+            print(f"[ERROR] {error_message}")
             return PlaywrightScrapeResponse(
                 url=url,
-                scraped_data=scraped_data,
+                scraped_data={},
                 summarized_data={},
-                portal=portal,
-                is_authorized_sponsor=authorized_sponsor,
+                portal=detect_portal(url),
+                is_authorized_sponsor=None,
                 match_score=None,
                 key_matches=None,
                 requirements_met=None,
@@ -2821,6 +3627,12 @@ async def playwright_scrape(
                 success=False,
                 error=error_message,
             )
+        
+        portal = scraped_data.get("portal") or detect_portal(url)
+        authorized_sponsor = is_authorized_sponsor(scraped_data.get("company_name"))
+        
+        print(f"[INFO] Successfully scraped using {scraping_method.upper()} method")
+        print(f"[INFO] Content length: {len(scraped_data.get('text_content') or scraped_data.get('description') or '')} characters")
         
         print(f"\n{'='*80}")
         print(f"AGENT SUMMARIZATION - Processing scraped data")
@@ -3053,8 +3865,7 @@ Be strict with scoring:
         else:
             print("SUCCESS - Scraping and summarization completed")
         print(f"{'='*80}")
-        # Extract visa/scholarship info from summarized_data
-        visa_scholarship_info = summarized_data.get("visa_scholarship_info") or "Not specified"
+        # Note: visa_scholarship_info is kept internally for sponsorship checking but not returned in response
         
         return PlaywrightScrapeResponse(
             url=url,
@@ -3067,7 +3878,6 @@ Be strict with scoring:
             requirements_met=scoring_result["requirements_met"] if scoring_result else None,
             total_requirements=scoring_result["total_requirements"] if scoring_result else None,
             reasoning=scoring_result["reasoning"] if scoring_result else None,
-            visa_scholarship_info=visa_scholarship_info,
             success=True,
             error=None
         )
@@ -3093,7 +3903,6 @@ Be strict with scoring:
             requirements_met=None,
             total_requirements=None,
             reasoning=None,
-            visa_scholarship_info="Not specified",
             success=False,
             error=error_msg
         )

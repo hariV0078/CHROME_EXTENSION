@@ -320,14 +320,17 @@ def check_sponsorship(company_name: Optional[str], job_content: Optional[str] = 
                 'company_name': match_result['company_name'],
                 'sponsors_workers': True,
                 'visa_types': match_result['visa_types'],
-                'summary': summary
+                'summary': summary,
+                'found_in_csv': True
             }
         else:
+            # Company not found in CSV - return with flag indicating we should fetch web info
             return {
                 'company_name': company_name,
                 'sponsors_workers': False,
                 'visa_types': None,
-                'summary': f"{company_name} was not found in the UK visa sponsorship database. This may mean they do not currently sponsor workers, or the company name does not match exactly."
+                'summary': f"{company_name} was not found in the UK visa sponsorship database. This may mean they do not currently sponsor workers, or the company name does not match exactly.",
+                'found_in_csv': False
             }
             
     except FileNotFoundError as e:
@@ -350,13 +353,14 @@ def check_sponsorship(company_name: Optional[str], job_content: Optional[str] = 
 def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] = None) -> Optional[str]:
     """
     Get company information from the web using Phi agent with DuckDuckGo search.
+    Also searches specifically for visa sponsorship information.
     
     Args:
         company_name: Company name to search for
         openai_api_key: OpenAI API key (if not provided, will use OPENAI_API_KEY env var)
         
     Returns:
-        Company information string or None if error occurs
+        Company information string including sponsorship availability, or None if error occurs
     """
     if not company_name:
         return None
@@ -364,7 +368,13 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
     try:
         from phi.agent import Agent
         from phi.model.openai import OpenAIChat
-        from phi.tools.duckduckgo import DuckDuckGo
+        # Use ddgs instead of duckduckgo_search to avoid warnings
+        try:
+            from phi.tools.duckduckgo import DuckDuckGo
+        except ImportError:
+            # Fallback: try to use ddgs directly if phi tools not available
+            print(f"[Company Info] DuckDuckGo tool not available, trying direct search")
+            return _get_company_info_direct(company_name)
         
         # Get API key
         api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -380,11 +390,15 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
             model=OpenAIChat(id="gpt-4o", api_key=api_key),
             tools=[DuckDuckGo()],
             instructions=[
-                "Search for information about the company including:",
-                "- Company overview and industry",
-                "- Company size and headquarters location",
+                f"Search for comprehensive information about {company_name} including:",
+                "- Company overview, industry, and what they do",
+                "- Company size, headquarters location, and global presence",
+                "- UK visa sponsorship availability and policies (CRITICAL - search specifically for this)",
                 "- Recent news or developments",
                 "- Company culture and values (if available)",
+                "",
+                "IMPORTANT: Specifically search for information about UK visa sponsorship, work visa sponsorship, or skilled worker visa sponsorship for this company.",
+                "If sponsorship information is found, clearly state whether they sponsor UK work visas.",
                 "Always include sources in your response.",
                 "Keep the response concise and informative (2-3 paragraphs maximum)."
             ],
@@ -392,8 +406,8 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
             markdown=False,
         )
         
-        # Search query
-        query = f"Tell me about {company_name} company: overview, industry, size, headquarters, and recent news"
+        # Search query - include sponsorship search
+        query = f"Tell me about {company_name} company: overview, industry, size, headquarters, UK visa sponsorship availability, and recent news"
         
         # Get response (non-streaming for simplicity)
         response = web_agent.run(query, stream=False)
@@ -421,10 +435,39 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
     except ImportError as e:
         print(f"[Company Info] Phi agent dependencies not available: {e}")
         print(f"[Company Info] Install phidata: pip install phidata")
-        return None
+        return _get_company_info_direct(company_name)
     except Exception as e:
         print(f"[Company Info] Error fetching company information: {e}")
         import traceback
         print(traceback.format_exc())
+        return _get_company_info_direct(company_name)
+
+
+def _get_company_info_direct(company_name: str) -> Optional[str]:
+    """Fallback method using ddgs directly if Phi tools are not available."""
+    try:
+        from ddgs import DDGS
+        
+        print(f"[Company Info] Using direct DuckDuckGo search for: {company_name}")
+        with DDGS() as ddgs:
+            # Search for company info
+            results = list(ddgs.text(f"{company_name} company UK visa sponsorship", max_results=3))
+            
+            if results:
+                info_parts = []
+                for result in results:
+                    info_parts.append(f"{result.get('title', '')}: {result.get('body', '')}")
+                
+                company_info = "\n\n".join(info_parts)
+                print(f"[Company Info] Successfully fetched company information via direct search ({len(company_info)} characters)")
+                return company_info
+            else:
+                print(f"[Company Info] No results found via direct search")
+                return None
+    except ImportError:
+        print(f"[Company Info] ddgs package not available. Install with: pip install ddgs")
+        return None
+    except Exception as e:
+        print(f"[Company Info] Error in direct search: {e}")
         return None
 

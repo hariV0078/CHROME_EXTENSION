@@ -24,3 +24,6 @@ pyngrok==7.2.3
 
 # Firebase
 firebase-admin==6.6.0
+
+ddgs
+playwright

@@ -95,20 +95,33 @@ def summarize_scraped_data(
     # Create extraction prompt (same structure as app.py lines 1728-1742)
     extraction_prompt = f"""Given the following scraped job posting data, extract ALL available information and return it in a structured format.
 
-Extract these fields:
-- Job title (exact title from posting)
-- Company name
-- Complete job description
-- Required skills (list each skill separately)
-- Required experience (years and type)
-- Qualifications and education requirements
-- Responsibilities
-- Salary/compensation (if mentioned)
-- Location
-- Job type (full-time, internship, etc.)
-- Visa sponsorship or scholarship information (if mentioned - look for keywords like: visa sponsorship, visa support, H1B, work permit, scholarship, funding, financial support, tuition assistance, etc.)
+CRITICAL: You MUST extract and return the following fields. These are REQUIRED:
+
+1. **Job title** (REQUIRED - exact title from posting):
+   - Look for the main job title/position name
+   - Extract from headings, titles, or prominent text
+   - Examples: "Full Stack Developer", "Software Engineer", "Data Scientist"
+   - If not found, return "Not specified"
+
+2. **Company name** (REQUIRED - name of the hiring company):
+   - Look for company name in various formats: "by [Company]", "Company:", "at [Company]", "from [Company]"
+   - Check for company names near the job title or in headers
+   - Examples: "Michael Page Technology", "Google", "Microsoft Corporation"
+   - If a pre-extracted company name is provided in the data, use it if it seems valid
+   - If not found, return "Not specified"
+
+3. Complete job description
+4. Required skills (list each skill separately)
+5. Required experience (years and type)
+6. Qualifications and education requirements
+7. Responsibilities
+8. Salary/compensation (if mentioned)
+9. Location
+10. Job type (full-time, internship, etc.)
+11. Visa sponsorship or scholarship information (if mentioned - look for keywords like: visa sponsorship, visa support, H1B, work permit, scholarship, funding, financial support, tuition assistance, etc.)
 
 Return structured data with all fields clearly labeled.
+IMPORTANT: Job title and Company name are CRITICAL fields - make every effort to extract them accurately from the content.
 If a field is not found, mark it as 'Not specified'.
 For visa/scholarship information: If mentioned, extract the exact details. If not mentioned, set to 'Not specified'.
 
@@ -128,6 +141,9 @@ Content:
             response_text = str(last_msg.content if hasattr(last_msg, 'content') else last_msg)
         else:
             response_text = str(agent_response)
+        
+        # Clean markdown formatting from response text
+        response_text = _clean_summary_text(response_text)
         
         # Parse the structured response
         structured_data = _parse_agent_response(response_text, scraped_data)
@@ -152,9 +168,20 @@ def _parse_agent_response(response_text: str, scraped_data: Dict[str, Any]) -> D
         return _result_from_json(json_payload, scraped_data, result)
 
     # Use regex to extract fields from agent response
+    # Prioritize job_title and company_name with multiple pattern variations
     patterns = {
-        "job_title": r'(?:Job Title|Title)[:\s]+(.+?)(?:\n|$)',
-        "company_name": r'(?:Company Name|Company)[:\s]+(.+?)(?:\n|$)',
+        "job_title": [
+            r'(?:Job Title|Title|Position|Role)[:\*\s]+(.+?)(?:\n|$)',
+            r'1\.\s*\*\*Job title\*\*[:\s]+(.+?)(?:\n|$)',
+            r'Job title[:\s]+(.+?)(?:\n|$)',
+            r'Title[:\s]+(.+?)(?:\n|$)',
+        ],
+        "company_name": [
+            r'(?:Company Name|Company|Employer|Organization|Organisation)[:\*\s]+(.+?)(?:\n|$)',
+            r'2\.\s*\*\*Company name\*\*[:\s]+(.+?)(?:\n|$)',
+            r'Company[:\s]+(.+?)(?:\n|$)',
+            r'by\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60})(?:\n|$)',
+        ],
         "location": r'(?:Location)[:\s]+(.+?)(?:\n|$)',
         "required_experience": r'(?:Required Experience|Experience|Years of Experience)[:\s]+(.+?)(?:\n|$)',
         "salary": r'(?:Salary|Compensation|Pay)[:\s]+(.+?)(?:\n|$)',
@@ -162,10 +189,30 @@ def _parse_agent_response(response_text: str, scraped_data: Dict[str, Any]) -> D
         "visa_scholarship_info": r'(?:Visa Sponsorship|Visa Support|Scholarship|Visa/Scholarship|Visa and Scholarship)[:\s]+(.+?)(?:\n\n|\n(?=[A-Z])|\Z)',
     }
     
+    # Extract job_title and company_name with multiple patterns (they are critical)
+    for field in ["job_title", "company_name"]:
+        if field in patterns:
+            pattern_list = patterns[field] if isinstance(patterns[field], list) else [patterns[field]]
+            for pattern in pattern_list:
+                match = re.search(pattern, response_text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    extracted_value = match.group(1).strip()
+                    # Clean markdown formatting from extracted values
+                    cleaned_value = _clean_summary_text(extracted_value)
+                    if cleaned_value and cleaned_value.lower() not in ["not specified", "unknown", "none", ""]:
+                        result[field] = cleaned_value
+                        print(f"[PARSER] Extracted {field}: {cleaned_value}")
+                        break
+    
+    # Extract other fields with single patterns
     for field, pattern in patterns.items():
+        if field in ["job_title", "company_name"]:
+            continue  # Already handled above
         match = re.search(pattern, response_text, re.IGNORECASE | re.MULTILINE)
         if match:
-            result[field] = match.group(1).strip()
+            extracted_value = match.group(1).strip()
+            # Clean markdown formatting from extracted values
+            result[field] = _clean_summary_text(extracted_value)
     
     # Extract description (everything after "Description:" or "Job Description:")
     desc_match = re.search(
@@ -174,7 +221,8 @@ def _parse_agent_response(response_text: str, scraped_data: Dict[str, Any]) -> D
         re.IGNORECASE | re.DOTALL
     )
     if desc_match:
-        result["description"] = desc_match.group(1).strip()
+        extracted_desc = desc_match.group(1).strip()
+        result["description"] = _clean_summary_text(extracted_desc)
     
     # Extract qualifications
     qual_match = re.search(
@@ -183,7 +231,8 @@ def _parse_agent_response(response_text: str, scraped_data: Dict[str, Any]) -> D
         re.IGNORECASE | re.DOTALL
     )
     if qual_match:
-        result["qualifications"] = qual_match.group(1).strip()
+        extracted_qual = qual_match.group(1).strip()
+        result["qualifications"] = _clean_summary_text(extracted_qual)
     
     # Extract responsibilities
     resp_match = re.search(
@@ -192,7 +241,8 @@ def _parse_agent_response(response_text: str, scraped_data: Dict[str, Any]) -> D
         re.IGNORECASE | re.DOTALL
     )
     if resp_match:
-        result["responsibilities"] = resp_match.group(1).strip()
+        extracted_resp = resp_match.group(1).strip()
+        result["responsibilities"] = _clean_summary_text(extracted_resp)
     
     # Extract required skills (list)
     skills_section = re.search(
@@ -358,10 +408,12 @@ def _result_from_json(
     scraped_data: Dict[str, Any],
     result: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Populate result from JSON payload."""
+    """Populate result from JSON payload. Prioritizes job_title and company_name."""
     field_mapping = {
-        "job_title": ["job_title", "Job title", "Title"],
-        "company_name": ["company_name", "Company name", "Company"],
+        # CRITICAL FIELDS - multiple variations to ensure extraction
+        "job_title": ["job_title", "Job title", "Title", "jobTitle", "JobTitle", "position", "Position", "role", "Role"],
+        "company_name": ["company_name", "Company name", "Company", "companyName", "CompanyName", "employer", "Employer", "organization", "Organization"],
+        # Other fields
         "location": ["location", "Location"],
         "description": ["description", "Complete job description", "Job description"],
         "required_skills": ["required_skills", "Required skills"],
@@ -376,7 +428,27 @@ def _result_from_json(
 
     normalized_payload = {str(k).strip(): v for k, v in payload.items()}
 
+    # Prioritize job_title and company_name extraction
+    for field in ["job_title", "company_name"]:
+        if field in field_mapping:
+            keys = field_mapping[field]
+            for key in keys:
+                if key in normalized_payload and normalized_payload[key] not in (None, ""):
+                    value = normalized_payload[key]
+                    if isinstance(value, str):
+                        value = value.strip().strip('"')
+                        if value.lower() not in ["not specified", "unknown", "none", ""]:
+                            # Clean markdown formatting from string values
+                            value = _clean_summary_text(value)
+                            if value:  # Only set if we got a valid value after cleaning
+                                result[field] = value
+                                print(f"[PARSER] Extracted {field} from JSON: {value}")
+                                break
+    
+    # Extract other fields
     for field, keys in field_mapping.items():
+        if field in ["job_title", "company_name"]:
+            continue  # Already handled above
         for key in keys:
             if key in normalized_payload and normalized_payload[key] not in (None, ""):
                 value = normalized_payload[key]
@@ -384,6 +456,9 @@ def _result_from_json(
                     value = value.strip().strip('"')
                     if value.lower() == "not specified":
                         value = "Not specified"
+                    else:
+                        # Clean markdown formatting from string values
+                        value = _clean_summary_text(value)
                 if field in {"required_skills", "suggested_skills"} and isinstance(value, str):
                     value = _split_to_list(value)
                 result[field] = value
@@ -400,8 +475,63 @@ def _split_to_list(value: str) -> List[str]:
     ]
 
 
+def _clean_summary_text(text: str) -> str:
+    """
+    Clean summary text to remove markdown formatting inconsistencies like "Name**: Value".
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    
+    # Remove leading/trailing whitespace
+    text = text.strip()
+    
+    # Remove markdown code fences
+    text = re.sub(r'^```[\w]*\s*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\n?```\s*$', '', text, flags=re.MULTILINE)
+    
+    # Remove patterns like "Name**:", "**Name**:", "Name:", etc. at the start of lines
+    text = re.sub(r'^(\*{0,2}(?:Name|Company|Title|Job Title|Position|Role|Location|Salary|Description|Summary|Employer|Organization)\*{0,2}:?\s*)', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    
+    # Remove bold markdown (**text** or __text__)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    
+    # Remove italic markdown (*text* or _text_)
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', text)
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', r'\1', text)
+    
+    # Remove standalone asterisks at line starts/ends
+    text = re.sub(r'^\*+\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*\*+$', '', text, flags=re.MULTILINE)
+    
+    # Remove patterns like "**:**" or "**: " at line starts
+    text = re.sub(r'^\*{1,2}:?\s*', '', text, flags=re.MULTILINE)
+    
+    # Clean up multiple consecutive asterisks
+    text = re.sub(r'\*{3,}', '', text)
+    
+    # Remove markdown headers
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # Normalize whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    # Remove leading/trailing whitespace from each line
+    lines = [line.strip() for line in text.split('\n')]
+    text = '\n'.join(lines)
+    
+    return text.strip()
+
+
 def _finalize_result(result: Dict[str, Any], scraped_data: Dict[str, Any]) -> Dict[str, Any]:
     """Apply fallbacks and normalization before returning result."""
+    # Clean all string fields to remove markdown formatting
+    for field in ["job_title", "company_name", "location", "description", "qualifications", 
+                  "responsibilities", "salary", "job_type", "visa_scholarship_info"]:
+        if isinstance(result.get(field), str):
+            result[field] = _clean_summary_text(result[field])
+    
     # Fallback to scraped_data if fields are missing
     if not result["job_title"] and scraped_data.get("job_title"):
         result["job_title"] = scraped_data["job_title"]

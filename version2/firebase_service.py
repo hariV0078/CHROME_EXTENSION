@@ -387,7 +387,7 @@ class FirebaseService:
             print(f"[Firebase] [DUPLICATE] Error checking for duplicate: {e}")
             # Don't fail on duplicate check errors, just log and continue
             return None
-    
+
     def save_job_application(self, user_id: str, job_data: Dict[str, Any]) -> str:
         """
         Save a job application to Firestore.
@@ -556,10 +556,10 @@ class FirebaseService:
                         duplicates_count += 1
                         print(f"[Firebase] [BATCH] ⚠️  Duplicate found for job {idx}, skipping save. Existing ID: {existing_doc_id}")
                     else:
-                        doc_id = self.save_job_application(user_id, job_data)
-                        document_ids.append(doc_id)
+                    doc_id = self.save_job_application(user_id, job_data)
+                    document_ids.append(doc_id)
                         new_count += 1
-                        print(f"[Firebase] [BATCH] ✓ Successfully saved job {idx} with ID: {doc_id}")
+                    print(f"[Firebase] [BATCH] ✓ Successfully saved job {idx} with ID: {doc_id}")
                 except Exception as job_error:
                     print(f"[Firebase] [BATCH] [ERROR] Failed to save job {idx}: {str(job_error)}")
                     import traceback
@@ -593,7 +593,7 @@ class FirebaseService:
             db = FirebaseService._db
             if db is None:
                 return None
-            
+                
             collection_ref = db.collection("sponsorship_checks").document(user_id).collection("checks")
             
             # Strategy 1: Check by request_id (most specific - same match-jobs request)
@@ -614,11 +614,11 @@ class FirebaseService:
                     return doc.id
             
             return None
-            
+        
         except Exception as e:
             print(f"[Firebase] [SPONSORSHIP] [DUPLICATE] Error checking for duplicate: {e}")
             # Don't fail on duplicate check errors, just log and continue
-            return None
+        return None
     
     def save_sponsorship_info(self, user_id: str, request_id: str, sponsorship_data: Dict[str, Any], job_info: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -759,7 +759,7 @@ class FirebaseService:
             
             # CRITICAL: Save the document and get the result
             try:
-                result = collection_ref.add(document_data)
+            result = collection_ref.add(document_data)
                 print(f"[Firebase] [SPONSORSHIP] [DEBUG] add() returned: {result}")
                 print(f"[Firebase] [SPONSORSHIP] [DEBUG] Result type: {type(result)}")
             except Exception as save_error:
@@ -797,8 +797,8 @@ class FirebaseService:
             doc = None
             for attempt in range(3):
                 try:
-                    doc = collection_ref.document(doc_id).get()
-                    if doc.exists:
+            doc = collection_ref.document(doc_id).get()
+            if doc.exists:
                         break
                     if attempt < 2:
                         print(f"[Firebase] [SPONSORSHIP] [VERIFY] Attempt {attempt + 1} failed, retrying in 0.5s...")
