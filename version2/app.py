@@ -3829,6 +3829,33 @@ Be honest about the fit level based on the score.
                             job_info=job_info
                         )
                         
+                        # Fetch the saved document to include in response
+                        document_data = None
+                        try:
+                            from firebase_admin import firestore
+                            db = firestore.client()
+                            doc_ref = db.collection("sponsorship_checks").document(sponsorship_user_id).collection("checks").document(doc_id)
+                            doc = doc_ref.get()
+                            if doc.exists:
+                                document_data = doc.to_dict()
+                                # Convert datetime objects to ISO format strings for JSON serialization
+                                if document_data:
+                                    for key, value in document_data.items():
+                                        if isinstance(value, datetime):
+                                            document_data[key] = value.isoformat()
+                                print(f"[Sponsorship] [FETCH] Successfully fetched document data from Firestore")
+                            else:
+                                print(f"[Sponsorship] [FETCH] Warning: Document not found after save")
+                        except Exception as fetch_error:
+                            print(f"[Sponsorship] [FETCH] Error fetching document: {fetch_error}")
+                            # Don't fail the request if fetch fails, just log it
+                        
+                        # Update sponsorship_info with document data
+                        if sponsorship_info and document_data:
+                            sponsorship_info.document_id = doc_id
+                            sponsorship_info.document_data = document_data
+                            print(f"[Sponsorship] [RESPONSE] Added document data to sponsorship_info")
+                        
                         print(f"\n{'='*80}")
                         print(f"[Sponsorship] ✓ SUCCESS - Saved sponsorship info to Firestore")
                         print(f"[Sponsorship] [DOC_ID] {doc_id}")
