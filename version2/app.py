@@ -295,7 +295,7 @@ def get_settings() -> Settings:
 
         firecrawl_api_key=os.getenv("FIRECRAWL_API_KEY"),
 
-        model_name=os.getenv("OPENAI_MODEL", "gpt-4o"),
+        model_name=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
 
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120")),
 
