@@ -418,29 +418,41 @@ def clean_company_name(company: Optional[str]) -> Optional[str]:
     company = re.sub(r'^at\s+', '', company, flags=re.IGNORECASE)
     company = re.sub(r'^for\s+', '', company, flags=re.IGNORECASE)
     company = re.sub(r'^with\s+', '', company, flags=re.IGNORECASE)
+    company = re.sub(r'^by\s+', '', company, flags=re.IGNORECASE)
     
     # Remove quotes and special characters
     company = re.sub(r'^["\'\`]+|["\'\`]+$', '', company)
     company = re.sub(r'^[\*\-\s]+|[\*\-\s]+$', '', company)
+    
+    # Remove truncated text indicators
+    if company.endswith('...') or company.endswith('…'):
+        return None  # Truncated company names are invalid
+    
+    # Remove if it ends mid-word (likely truncated)
+    if len(company) > 50 and not company[-1].isalnum() and not company.endswith(('Ltd', 'Inc', 'LLC', 'Corp', 'Corporation', 'Group', 'Holdings')):
+        # Likely truncated
+        return None
     
     # Normalize whitespace
     company = re.sub(r'\s+', ' ', company)
     company = company.strip()
     
     # Validate company name quality
-    if not company or len(company) < 2:
+    if not company or len(company) < 3:
         return None
     
-    if len(company) > 100:
-        company = company[:100].strip()
+    # Reject if too long (likely description text)
+    if len(company) > 80:
+        return None
     
     # Remove if it looks invalid
     invalid_patterns = [
-        r'^(not specified|unknown|n/a|na|none|company|employer)$',
+        r'^(not specified|unknown|n/a|na|none|company|employer|not available)$',
         r'^[\*\-\s]+$',  # Only asterisks, dashes, or spaces
+        r'\b(transforming|leveraging|integrating|facilitating)\b',  # Contains verbs (likely description)
     ]
     for pattern in invalid_patterns:
-        if re.match(pattern, company, re.IGNORECASE):
+        if re.search(pattern, company, re.IGNORECASE):
             return None
     
     return company
@@ -574,6 +586,45 @@ def extract_job_title_from_content(content: str, fallback_title: Optional[str] =
     return "Job title not available in posting"
 
 
+def is_valid_company_name(name: str) -> bool:
+    """
+    Validate if extracted text looks like a real company name.
+    
+    Args:
+        name: Potential company name
+    
+    Returns:
+        True if it looks like a valid company name
+    """
+    if not name or len(name) < 3:
+        return False
+    
+    # Reject if it's too long (likely description text)
+    if len(name) > 80:
+        return False
+    
+    # Reject if it contains too many common words (likely description)
+    common_words = ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'by', 'leveraging', 'transforming', 'using', 'through']
+    word_count = sum(1 for word in common_words if word in name.lower())
+    if word_count >= 3:
+        return False
+    
+    # Reject if it starts with lowercase (likely mid-sentence)
+    if name[0].islower():
+        return False
+    
+    # Reject if it contains verbs indicating it's a description
+    verb_patterns = [
+        r'\b(transforming|leveraging|integrating|facilitating|building|creating|developing|providing)\b',
+        r'\b(we|our|their|its)\b',
+    ]
+    for pattern in verb_patterns:
+        if re.search(pattern, name.lower()):
+            return False
+    
+    return True
+
+
 def extract_company_name_from_content(content: str, fallback_company: Optional[str] = None) -> Optional[str]:
     """
     Extract company name from scraped content using multiple strategies.
@@ -590,41 +641,53 @@ def extract_company_name_from_content(content: str, fallback_company: Optional[s
     
     content_lower = content.lower()
     
-    # Pattern 1: Look for "Company:", "Employer:", "Organization:" patterns
-    # Also look for "by [Company]" pattern (common in job postings like "7 November by Michael Page Technology")
-    patterns = [
-        r'(?:company|employer|organization|organisation)[:\s]+([A-Z][A-Za-z0-9\s&.,\-]{2,50})',
-        r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services))?)',
-        r'at\s+([A-Z][A-Za-z0-9\s&.,\-]{2,50})\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings)',
-        r'([A-Z][A-Za-z0-9\s&.,\-]{2,50})\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation)',
-        r'working\s+(?:at|for|with)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,50})',
+    # Pattern 1: Look for explicit company labels with proper names
+    # Prioritize patterns with company suffixes (Ltd, Inc, etc.)
+    priority_patterns = [
+        r'(?:company|employer|organization|organisation)(?:\s+description)?[:\s]+([A-Z][A-Za-z0-9\s&.,\-\']+?(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services|Pvt\.?\s*Ltd\.?))',
+        r'([A-Z][A-Za-z0-9\s&.,\-\']+?(?:Pvt\.?\s*Ltd\.?|Private Limited|Ltd\.?|Limited|Inc\.?|LLC|Corporation|Corp\.?))',
+        r'(?:at|for|with)\s+([A-Z][A-Za-z0-9\s&.,\-\']+?(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services|Pvt\.?\s*Ltd\.?))',
     ]
     
-    for pattern in patterns:
-        matches = re.finditer(pattern, content[:2000], re.IGNORECASE)
+    for pattern in priority_patterns:
+        matches = re.finditer(pattern, content[:1500])
         for match in matches:
             potential_company = match.group(1).strip()
             cleaned = clean_company_name(potential_company)
-            if cleaned and len(cleaned) >= 2:
+            if cleaned and is_valid_company_name(cleaned):
                 return cleaned
     
-    # Pattern 2: Look for "About [Company]" or "Join [Company]"
-    about_patterns = [
-        r'(?:about|join|work\s+at|careers\s+at)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,50})',
+    # Pattern 2: Look for "Company Description" or "About" sections
+    section_patterns = [
+        r'(?:company\s+description|about\s+(?:the\s+)?company|about\s+us)[:\s]+([A-Z][A-Za-z0-9\s&.,\-\']{3,60}?)(?:\s+is|\s+integrate|\s+provide|\.|,)',
+        r'(?:at|join|work\s+at|careers\s+at)\s+([A-Z][A-Za-z0-9\s&.,\-\']{3,50}?)(?:\s*,|\s+is|\s+we)',
     ]
     
-    for pattern in about_patterns:
+    for pattern in section_patterns:
         matches = re.finditer(pattern, content[:1000], re.IGNORECASE)
         for match in matches:
             potential_company = match.group(1).strip()
             cleaned = clean_company_name(potential_company)
-            if cleaned and len(cleaned) >= 2:
+            if cleaned and is_valid_company_name(cleaned):
+                return cleaned
+    
+    # Pattern 3: Look for "by [Company]" pattern (common in job listings)
+    by_patterns = [
+        r'(?:by|from)\s+([A-Z][A-Za-z0-9\s&.,\-\']{3,50}?)(?:\s+is|\s+integrate|\s+provide|\s*\n|\s*$)',
+    ]
+    
+    for pattern in by_patterns:
+        matches = re.finditer(pattern, content[:500])
+        for match in matches:
+            potential_company = match.group(1).strip()
+            cleaned = clean_company_name(potential_company)
+            if cleaned and is_valid_company_name(cleaned):
                 return cleaned
     
     # Fallback to provided company if available
     if fallback_company:
         cleaned = clean_company_name(fallback_company)
-        if cleaned:
+        if cleaned and is_valid_company_name(cleaned):
             return cleaned
     
     return "Company name not available in posting"

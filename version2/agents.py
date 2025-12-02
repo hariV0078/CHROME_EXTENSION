@@ -194,25 +194,59 @@ def normalize_skill(skill: str) -> str:
 
 
 def extract_skills_from_text(text: str) -> List[str]:
-    """Extract skill keywords from text."""
+    """Extract skill keywords from text - comprehensive extraction."""
     if not text:
         return []
     
-    # Common technical skills patterns
+    # Comprehensive technical skills patterns
     skill_patterns = [
-        r'\b(python|java|javascript|typescript|react|angular|vue|node\.?js|django|flask|spring|express)\b',
-        r'\b(sql|mysql|postgresql|mongodb|redis|elasticsearch)\b',
-        r'\b(aws|azure|gcp|docker|kubernetes|terraform|jenkins|ci/cd)\b',
-        r'\b(machine learning|ml|deep learning|ai|artificial intelligence|tensorflow|pytorch|scikit-learn)\b',
-        r'\b(data science|data analysis|pandas|numpy|matplotlib|seaborn)\b',
-        r'\b(html|css|sass|less|bootstrap|tailwind)\b',
-        r'\b(git|github|gitlab|bitbucket|svn)\b',
-        r'\b(agile|scrum|kanban|jira|confluence)\b',
+        # Programming languages
+        r'\b(python|java|javascript|typescript|c\+\+|c#|ruby|php|swift|kotlin|go|rust|scala|r)\b',
+        # Web frameworks
+        r'\b(react|angular|vue|node\.?js|django|flask|spring|express|laravel|rails)\b',
+        # Databases
+        r'\b(sql|mysql|postgresql|mongodb|redis|elasticsearch|oracle|cassandra|dynamodb)\b',
+        # Cloud & DevOps
+        r'\b(aws|azure|gcp|docker|kubernetes|terraform|jenkins|ci/cd|ansible|puppet)\b',
+        # ML/AI/Data Science
+        r'\b(machine learning|ml|deep learning|ai|artificial intelligence|tensorflow|pytorch|scikit-learn|keras)\b',
+        r'\b(data science|data analysis|data engineering|data annotation|data curation)\b',
+        r'\b(pandas|numpy|matplotlib|seaborn|scipy|opencv|computer vision|cv)\b',
+        r'\b(nlp|natural language processing|llm|large language models)\b',
+        r'\b(cnn|convolutional neural network|rnn|lstm|transformer)\b',
+        # Data visualization & BI
+        r'\b(tableau|power bi|looker|qlik|d3\.js|plotly)\b',
+        # Frontend
+        r'\b(html|css|sass|less|bootstrap|tailwind|jquery|webpack)\b',
+        # Version control & collaboration
+        r'\b(git|github|gitlab|bitbucket|svn|mercurial)\b',
+        # Methodologies
+        r'\b(agile|scrum|kanban|jira|confluence|waterfall)\b',
+        # Annotation & labeling tools
+        r'\b(cvat|labelbox|via|label studio|supervisely|annotation|labeling)\b',
+        # Other technical
+        r'\b(api|rest|graphql|microservices|etl|data pipeline|spark|hadoop)\b',
     ]
     
     found_skills = []
     text_lower = text.lower()
     for pattern in skill_patterns:
+        matches = re.findall(pattern, text_lower, re.IGNORECASE)
+        found_skills.extend(matches)
+    
+    # Also extract common domain terms that indicate requirements
+    domain_terms = [
+        r'\b(data\s+annotation)\b',
+        r'\b(data\s+curation)\b',
+        r'\b(data\s+cleaning)\b',
+        r'\b(data\s+engineering)\b',
+        r'\b(machine\s+learning)\b',
+        r'\b(computer\s+vision)\b',
+        r'\b(image\s+processing)\b',
+        r'\b(model\s+training)\b',
+    ]
+    
+    for pattern in domain_terms:
         matches = re.findall(pattern, text_lower, re.IGNORECASE)
         found_skills.extend(matches)
     
@@ -674,12 +708,14 @@ def clean_scraper_response(response_text: str) -> Dict[str, Any]:
     return result
 
 
-class DeterministicScorer:
+# Deterministic scorer kept for reference but not used by default
+# Uncomment and use build_deterministic_scorer() if you want fully deterministic scoring
+class _DeterministicScorer:
     """Wrapper class to mimic Agent interface but use deterministic scoring."""
     
     def __init__(self, model_name: str = None):
         """Initialize scorer (model_name kept for compatibility but not used)."""
-        self.name = "Job Scorer"
+        self.name = "Job Scorer (Deterministic)"
         self.model_name = model_name
     
     def run(self, input_data: Union[str, Dict[str, Any]]) -> str:
@@ -777,20 +813,112 @@ class DeterministicScorer:
         }
 
 
-def build_scorer(model_name: str = None):
+def build_deterministic_scorer(model_name: str = None):
     """
-    Returns a deterministic scorer instead of an AI agent.
-    This ensures consistent, reproducible scoring results.
+    Returns a fully deterministic scorer (no AI).
+    Use this if you want 100% consistent scores with no variation.
+    
+    Note: This is NOT the default. Use build_scorer() for AI-based scoring.
     """
-    return DeterministicScorer(model_name)
+    return _DeterministicScorer(model_name)
+
+
+def build_scorer(model_name: str) -> Agent:
+    """
+    Agent that evaluates job-candidate fit using AI reasoning.
+    Uses strict prompting and validation to minimize hallucinations.
+    """
+    model_config = get_model_config(model_name, default_temperature=0)
+    return Agent(
+        name="Job Scorer",
+        role="Evaluate candidate-job match accurately based on provided data only",
+        model=OpenAIChat(**model_config),
+        instructions=[
+            "You are a precise job matching evaluator. Analyze ONLY the information provided.",
+            "",
+            "INPUT FORMAT:",
+            "You receive: candidate_profile (JSON) and job_details (text or JSON).",
+            "",
+            "SCORING METHODOLOGY:",
+            "1. Skills Match (40%): Count how many job-required skills the candidate has",
+            "   - Extract ALL skills/technologies mentioned in job description",
+            "   - Match against candidate's skills list",
+            "   - Include related skills (e.g., TensorFlow matches ML, Python matches data analysis)",
+            "   - Count each matched skill in key_matches[]",
+            "",
+            "2. Experience Match (30%): Compare experience level",
+            "   - Check if candidate meets minimum years required",
+            "   - Consider domain relevance",
+            "   - Add to requirements_met if experience requirement is satisfied",
+            "",
+            "3. Role Fit (20%): Match job responsibilities to candidate experience",
+            "   - Look for keywords in candidate's experience_summary",
+            "   - Consider education alignment",
+            "   - Add to requirements_met if education requirement is satisfied",
+            "",
+            "4. Growth Potential (10%): Candidate's ability to grow in role",
+            "",
+            "REQUIREMENTS COUNTING:",
+            "- total_requirements = ALL requirements mentioned in job (skills + experience + education + qualifications)",
+            "- requirements_met = Number of requirements the candidate satisfies",
+            "- Example: Job needs [Python, ML, 0-1 year exp, BE degree] = 4 total requirements",
+            "  Candidate has [Python, TensorFlow, Pandas, 1.4 years, BE CSE] = 5 requirements met (Python✓, ML via TensorFlow✓, exp✓, degree✓, bonus: Pandas✓)",
+            "",
+            "CRITICAL RULES TO PREVENT HALLUCINATION:",
+            "- Do NOT invent skills the candidate doesn't have",
+            "- Do NOT assume information not in the data",
+            "- Count ONLY skills explicitly listed in candidate_profile.skills[]",
+            "- If job description mentions 'data annotation' and candidate has 'Python, ML, Computer Vision' - these ARE related matches",
+            "- Be GENEROUS with related skills (ML/CV/Data Science experience counts for data annotation roles)",
+            "- Count related skills: 'Data Annotation' job + candidate has 'TensorFlow, Pandas, OpenCV' = 3 requirements met",
+            "",
+            "OUTPUT FORMAT (MUST be valid JSON):",
+            "{",
+            '  "match_score": 0.65,',
+            '  "key_matches": ["Python", "TensorFlow", "Pandas", "Computer Vision", "Data Analysis"],',
+            '  "requirements_met": 8,',
+            '  "total_requirements": 10,',
+            '  "reasoning": "Candidate has strong ML and Python skills relevant to data annotation. Experience with TensorFlow, Keras, and computer vision directly applies to ML data curation tasks. Meets experience and education requirements."',
+            "}",
+            "",
+            "REQUIREMENTS CALCULATION EXAMPLE:",
+            "Job Description: 'Data Annotation for ML. Need Python, ML knowledge, 0-1 year exp, BE/BTech degree'",
+            "Total Requirements: 4 (Python, ML, Experience, Degree)",
+            "Candidate: Has Python, TensorFlow, Keras, Pandas, OpenCV, 1.4 years, BE CSE",
+            "Requirements Met: 5+ (Python✓, ML via TensorFlow/Keras✓, Experience✓, Degree✓, Bonus: Pandas, OpenCV for data work)",
+            "Key Matches: ['Python', 'TensorFlow', 'Keras', 'Pandas', 'OpenCV', 'Computer Vision']",
+            "Match Score: 0.70-0.75 (strong match)",
+            "",
+            "SCORING GUIDELINES:",
+            "- 0.0-0.3: Poor fit (missing most key skills)",
+            "- 0.3-0.5: Weak fit (some transferable skills)",
+            "- 0.5-0.7: Good fit (solid match with minor gaps)",
+            "- 0.7-1.0: Excellent fit (strong alignment)",
+            "",
+            "IMPORTANT: Be realistic but not overly strict. Related skills count!",
+            "",
+            "REAL EXAMPLE - Data Annotator Role:",
+            "Job: 'Data Annotation for AI/ML car platforms, 0-1 year, BE/MTech CSE'",
+            "Candidate: Python, TensorFlow, Keras, PyTorch, OpenCV, Pandas, NumPy, Computer Vision, 1.42 years, BE CSE",
+            "Analysis:",
+            "- Total Requirements: ~5 (ML knowledge, Python, Experience, Degree, Data skills)",
+            "- Requirements Met: 8+ (Python✓, TensorFlow✓, Keras✓, PyTorch✓, OpenCV✓, Pandas✓, NumPy✓, CV✓, Exp✓, Degree✓)",
+            "- Key Matches: ['Python', 'TensorFlow', 'Keras', 'PyTorch', 'OpenCV', 'Computer Vision', 'Pandas', 'NumPy']",
+            "- Match Score: 0.70-0.75 (STRONG MATCH)",
+            "- Reasoning: 'Excellent ML/CV background for data annotation. Python, TensorFlow, and computer vision experience directly support ML data curation.'",
+        ],
+        show_tool_calls=True,
+        markdown=False,
+        response_format={"type": "json_object"} if model_config.get("response_format") else None,
+    )
 
 
 def build_summarizer(model_name: str) -> Agent:
-    """Agent that creates detailed job match summaries."""
+    """Agent that creates detailed job match summaries without hallucination."""
     model_config = get_model_config(model_name, default_temperature=0.3)
     return Agent(
         name="Summarizer",
-        role="Generate unique, detailed summaries for each matched job",
+        role="Generate accurate, unique summaries based only on provided data",
         model=OpenAIChat(**model_config),
         instructions=[
             "You receive: candidate_profile, job_details, and match_score.",
@@ -802,15 +930,31 @@ def build_summarizer(model_name: str) -> Agent:
             "- Mentions practical considerations (location, compensation, etc.)",
             "- Includes information about visa sponsorship or scholarship opportunities if mentioned in the job posting",
             "",
-            "CRITICAL RULES:",
+            "CRITICAL ANTI-HALLUCINATION RULES:",
+            "- Use ONLY information from the provided data - do NOT invent details",
+            "- Do NOT mention skills the candidate doesn't have",
+            "- Do NOT assume company details not in the job description",
+            "- Do NOT invent visa sponsorship info - only mention if explicitly stated",
+            "- Reference ACTUAL skills from candidate_profile.skills[] list",
+            "- Quote ACTUAL job requirements from job_details",
+            "",
+            "STRUCTURE:",
+            "1. Fit assessment (1 sentence based on match_score)",
+            "2. Why this is a good/weak match (specific skills that align)",
+            "3. Gaps and concerns (missing skills or experience)",
+            "4. Growth opportunities (if match_score >= 0.5)",
+            "5. Practical considerations (location, training, etc. if mentioned)",
+            "6. Visa sponsorship (ONLY if explicitly mentioned in job description)",
+            "",
+            "TONE GUIDELINES:",
             "- Each summary must be unique - never reuse text from other jobs",
             "- Be honest about fit - don't oversell poor matches",
-            "- Reference the actual job title and company name",
+            "- Reference the actual job title and company name from the data",
             "- If match_score < 0.5, explain why it's not a good fit",
             "- If match_score >= 0.5, explain why it's a strong match",
-            "- Always check the job description for visa sponsorship, visa support, scholarship, or funding information",
-            "- If visa/scholarship information is found, include it clearly in the summary",
-            "- If no visa/scholarship information is mentioned, state 'No visa sponsorship or scholarship information mentioned'",
+            "",
+            "EXAMPLE (for Data Annotator with ML candidate):",
+            "\"With a match score of 65%, the candidate is a good fit. Their Python, TensorFlow, and computer vision experience directly supports data annotation for ML models. However, they lack specific annotation tool experience (CVAT, Labelbox). Growth opportunity in ML data engineering. Location: Coimbatore. Training required in Aurangabad.\"",
         ],
         show_tool_calls=True,
         markdown=True,
