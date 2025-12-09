@@ -608,9 +608,20 @@ def is_valid_company_name(name: str) -> bool:
     if len(name) > 80:
         return False
     
+    # Reject invalid company name words
+    invalid_company_words = [
+        'hirer', 'employer', 'recruiter', 'hiring', 'company', 'organization', 'organisation',
+        'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'by', 
+        'leveraging', 'transforming', 'using', 'through', 'description', 'about'
+    ]
+    name_lower = name.lower().strip()
+    # Reject if the entire name is just an invalid word
+    if name_lower in invalid_company_words:
+        return False
+    
     # Reject if it contains too many common words (likely description)
     common_words = ['the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'by', 'leveraging', 'transforming', 'using', 'through']
-    word_count = sum(1 for word in common_words if word in name.lower())
+    word_count = sum(1 for word in common_words if word in name_lower)
     if word_count >= 3:
         return False
     
@@ -2330,13 +2341,31 @@ Extract every skill, tool, and technology mentioned. Calculate total years from 
             pre_extracted_company = None
             try:
                 # Try multiple extraction strategies
+                # Strategy 0: Look for company name at the very beginning (common format: "Company Name\n\nJob Title")
+                first_lines = job_data[:500].split('\n')[:5]  # First 5 lines
+                for line in first_lines:
+                    line = line.strip()
+                    if line and len(line) > 3 and len(line) < 80:
+                        # Check if it looks like a company name (starts with capital, no verbs)
+                        if line[0].isupper() and is_valid_company_name(line):
+                            # Additional check: should not be a job title (common job title words)
+                            job_title_words = ['engineer', 'developer', 'manager', 'analyst', 'specialist', 'lead', 'senior', 'junior', 'intern']
+                            if not any(word in line.lower() for word in job_title_words):
+                                cleaned = clean_company_name(line)
+                                if cleaned and is_valid_company_name(cleaned):
+                                    pre_extracted_company = cleaned
+                                    print(f"[Company Extraction] Pre-extracted from beginning: {pre_extracted_company}")
+                                    break
+                
                 # Strategy 1: Look for "by [Company]" pattern (common in job postings)
-                by_pattern = r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services))?)'
+                # But be more restrictive - require company suffix or longer names
+                by_pattern = r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{3,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services|Pvt\.?\s*Ltd\.?|Systems|Global|International))?)'
                 by_match = re.search(by_pattern, job_data[:2000], re.IGNORECASE)
                 if by_match:
                     potential_company = by_match.group(1).strip()
                     cleaned = clean_company_name(potential_company)
-                    if cleaned and len(cleaned) >= 2:
+                    # Validate with is_valid_company_name to reject invalid names like "hirer"
+                    if cleaned and is_valid_company_name(cleaned):
                         pre_extracted_company = cleaned
                         print(f"[Company Extraction] Pre-extracted from 'by' pattern: {pre_extracted_company}")
                 

@@ -10,8 +10,20 @@ from phi.agent import Agent
 from phi.model.openai import OpenAIChat
 
 # Import model config helper for consistent temperature handling
+# Note: We don't use JSON mode here since we parse text responses with regex
 try:
     from agents import get_model_config
+    # Override to remove JSON mode for text parsing agents
+    def get_model_config_no_json(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+        config = {"id": model_name}
+        models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+        model_lower = model_name.lower()
+        supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+        if supports_temperature:
+            config["temperature"] = default_temperature
+        # Don't add response_format - we parse text, not JSON
+        return config
+    get_model_config = get_model_config_no_json
 except ImportError:
     # Fallback if agents module not available
     def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
@@ -21,6 +33,7 @@ except ImportError:
         supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
         if supports_temperature:
             config["temperature"] = default_temperature
+        # Don't add response_format - we parse text, not JSON
         return config
 
 

@@ -438,9 +438,20 @@ def select_correct_company_match(
             location_context = f"\n\nJob Location: {job_location}\n(Use this to match against candidate company locations from the CSV database)"
         
         # Create selection agent with fast model and temperature=0 to prevent hallucination
-        # Import model config helper
+        # Import model config helper (without JSON mode since we parse text responses)
         try:
             from agents import get_model_config
+            # Override to remove JSON mode for text parsing agents
+            def get_model_config_no_json(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+                config = {"id": model_name, "api_key": api_key}
+                models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+                model_lower = model_name.lower()
+                supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+                if supports_temperature:
+                    config["temperature"] = default_temperature
+                # Don't add response_format - we parse text, not JSON
+                return config
+            get_model_config = get_model_config_no_json
         except ImportError:
             def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
                 config = {"id": model_name, "api_key": api_key}
@@ -449,6 +460,7 @@ def select_correct_company_match(
                 supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
                 if supports_temperature:
                     config["temperature"] = default_temperature
+                # Don't add response_format - we parse text, not JSON
                 return config
         
         model_name = "gpt-4o-mini"  # Faster model
@@ -676,6 +688,17 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
         # Create web agent with fast model and temperature=0 to prevent hallucination
         try:
             from agents import get_model_config
+            # Override to remove JSON mode for text parsing agents
+            def get_model_config_no_json(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+                config = {"id": model_name, "api_key": api_key}
+                models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+                model_lower = model_name.lower()
+                supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+                if supports_temperature:
+                    config["temperature"] = default_temperature
+                # Don't add response_format - we parse text, not JSON
+                return config
+            get_model_config = get_model_config_no_json
         except ImportError:
             def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
                 config = {"id": model_name, "api_key": api_key}
@@ -684,6 +707,7 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
                 supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
                 if supports_temperature:
                     config["temperature"] = default_temperature
+                # Don't add response_format - we parse text, not JSON
                 return config
         
         model_name = "gpt-4o-mini"  # Faster model
