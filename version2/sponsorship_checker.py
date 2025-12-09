@@ -437,10 +437,27 @@ def select_correct_company_match(
         if job_location:
             location_context = f"\n\nJob Location: {job_location}\n(Use this to match against candidate company locations from the CSV database)"
         
-        # Create selection agent
+        # Create selection agent with fast model and temperature=0 to prevent hallucination
+        # Import model config helper
+        try:
+            from agents import get_model_config
+        except ImportError:
+            def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+                config = {"id": model_name, "api_key": api_key}
+                models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+                model_lower = model_name.lower()
+                supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+                if supports_temperature:
+                    config["temperature"] = default_temperature
+                return config
+        
+        model_name = "gpt-4o-mini"  # Faster model
+        model_config = get_model_config(model_name, default_temperature=0)  # Temperature=0 to prevent hallucination
+        model_config["api_key"] = api_key  # Add API key
+        
         selection_agent = Agent(
             name="Company Match Selector",
-            model=OpenAIChat(id="gpt-4o", api_key=api_key),
+            model=OpenAIChat(**model_config),
             instructions=[
                 "You are an expert at matching company names. Your task is to determine which candidate company",
                 "from the UK visa sponsorship database is the correct match for the job posting company.",
@@ -656,10 +673,26 @@ def get_company_info_from_web(company_name: str, openai_api_key: Optional[str] =
         
         print(f"[Company Info] Fetching company information for: {company_name}")
         
-        # Create web agent
+        # Create web agent with fast model and temperature=0 to prevent hallucination
+        try:
+            from agents import get_model_config
+        except ImportError:
+            def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+                config = {"id": model_name, "api_key": api_key}
+                models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+                model_lower = model_name.lower()
+                supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+                if supports_temperature:
+                    config["temperature"] = default_temperature
+                return config
+        
+        model_name = "gpt-4o-mini"  # Faster model
+        model_config = get_model_config(model_name, default_temperature=0)  # Temperature=0 to prevent hallucination
+        model_config["api_key"] = api_key  # Add API key
+        
         web_agent = Agent(
             name="Company Info Agent",
-            model=OpenAIChat(id="gpt-4o", api_key=api_key),
+            model=OpenAIChat(**model_config),
             tools=[DuckDuckGo()],
             instructions=[
                 f"Search for comprehensive information about {company_name} including:",

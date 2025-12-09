@@ -9,6 +9,20 @@ import json
 from phi.agent import Agent
 from phi.model.openai import OpenAIChat
 
+# Import model config helper for consistent temperature handling
+try:
+    from agents import get_model_config
+except ImportError:
+    # Fallback if agents module not available
+    def get_model_config(model_name: str, default_temperature: float = 0) -> Dict[str, Any]:
+        config = {"id": model_name}
+        models_without_temperature = ["o1", "o1-mini", "o1-preview", "gpt-5-mini", "gpt-5"]
+        model_lower = model_name.lower()
+        supports_temperature = not any(no_temp in model_lower for no_temp in models_without_temperature)
+        if supports_temperature:
+            config["temperature"] = default_temperature
+        return config
+
 
 def summarize_scraped_data(
     scraped_data: Dict[str, Any],
@@ -41,11 +55,15 @@ def summarize_scraped_data(
     elif not os.getenv("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY must be provided or set as environment variable")
     
-    # Create agent
+    # Create agent with fast model and temperature=0 to prevent hallucination
+    # Using gpt-4o-mini for speed, with temperature=0 for consistency
+    model_name = "gpt-4o-mini"  # Fast model
+    model_config = get_model_config(model_name, default_temperature=0)  # Temperature=0 to prevent hallucination
+    
     agent = Agent(
         show_tool_calls=True,
         markdown=True,
-        model=OpenAIChat(id="gpt-4o-mini")
+        model=OpenAIChat(**model_config)
     )
     
     # Prepare the content to analyze

@@ -269,3 +269,130 @@ class SummarizeJobResponse(BaseModel):
     error: Optional[str] = None
 
 
+# Apollo API models
+class ApolloPersonSearchRequest(BaseModel):
+    """Request model for Apollo people search."""
+    person_titles: Optional[List[str]] = Field(
+        default=None,
+        description="Job titles to search for"
+    )
+    person_locations: Optional[List[str]] = Field(
+        default=None,
+        description="Locations to search (e.g., ['United States', 'United Kingdom'])"
+    )
+    organization_names: Optional[List[str]] = Field(
+        default=None,
+        description="Organization names to filter by"
+    )
+    person_emails: Optional[List[str]] = Field(
+        default=None,
+        description="Specific email addresses to search"
+    )
+    person_names: Optional[List[str]] = Field(
+        default=None,
+        description="Person names to search"
+    )
+    page: Optional[int] = Field(
+        default=1,
+        description="Page number for pagination"
+    )
+    per_page: Optional[int] = Field(
+        default=25,
+        ge=1,
+        le=100,
+        description="Number of results per page (1-100)"
+    )
+    api_key: Optional[str] = Field(
+        default=None,
+        description="Apollo API key (optional, uses APOLLO_API_KEY env var if not provided)"
+    )
+
+
+class ApolloOrganization(BaseModel):
+    """Organization information from Apollo."""
+    name: Optional[str] = None
+    has_industry: Optional[bool] = None
+    has_phone: Optional[bool] = None
+    has_city: Optional[bool] = None
+    has_state: Optional[bool] = None
+    has_country: Optional[bool] = None
+    has_zip_code: Optional[bool] = None
+    has_revenue: Optional[bool] = None
+    has_employee_count: Optional[bool] = None
+
+
+class ApolloPerson(BaseModel):
+    """Person information from Apollo."""
+    id: str
+    first_name: Optional[str] = None
+    last_name_obfuscated: Optional[str] = None
+    title: Optional[str] = None
+    last_refreshed_at: Optional[str] = None
+    has_email: Optional[bool] = None
+    has_city: Optional[bool] = None
+    has_state: Optional[bool] = None
+    has_country: Optional[bool] = None
+    has_direct_phone: Optional[str] = None
+    organization: Optional[ApolloOrganization] = None
+    email: Optional[str] = Field(
+        default=None,
+        description="Email address (if available with proper access)"
+    )
+    phone_number: Optional[str] = Field(
+        default=None,
+        description="Phone number (if available with proper access)"
+    )
+
+
+class ApolloPersonSearchResponse(BaseModel):
+    """Response model for Apollo people search."""
+    total_entries: Optional[int] = None
+    people: List[ApolloPerson] = Field(default_factory=list)
+    page: Optional[int] = None
+    per_page: Optional[int] = None
+    success: bool = True
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+class ApolloEnrichPersonRequest(BaseModel):
+    """Request model for Apollo person enrichment (works on free plan)."""
+    email: Optional[str] = Field(
+        default=None,
+        description="Email address to enrich"
+    )
+    first_name: Optional[str] = Field(
+        default=None,
+        description="First name"
+    )
+    last_name: Optional[str] = Field(
+        default=None,
+        description="Last name"
+    )
+    domain: Optional[str] = Field(
+        default=None,
+        description="Company domain (e.g., 'apollo.io')"
+    )
+    api_key: Optional[str] = Field(
+        default=None,
+        description="Apollo API key (optional, uses APOLLO_API_KEY env var if not provided)"
+    )
+
+
+class ApolloEnrichPersonResponse(BaseModel):
+    """Response model for Apollo person enrichment."""
+    person: Optional[ApolloPerson] = None
+    success: bool = True
+    error: Optional[str] = None
+    message: Optional[str] = None
+
+
+# Sponsorship Check models
+class SponsorshipCheckRequest(BaseModel):
+    """Request model for sponsorship checking with scraped job data."""
+    job_info: str = Field(
+        ...,
+        description="Scraped job data/content (same format as jobdata in match-jobs endpoint). LLM agent will extract company name and other details from this."
+    )
+
+

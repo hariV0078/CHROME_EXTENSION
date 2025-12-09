@@ -79,6 +79,11 @@ from models import (
     SummarizeJobResponse,
 
     SponsorshipInfo,
+    ApolloPersonSearchRequest,
+    ApolloPersonSearchResponse,
+    ApolloEnrichPersonRequest,
+    ApolloEnrichPersonResponse,
+    SponsorshipCheckRequest,
 )
 from utils import (
     decode_base64_pdf,
@@ -4869,7 +4874,567 @@ async def extract_job_info(
         )
 
 
+# Apollo API People Search Endpoint
 
+@app.post("/api/apollo/search-people", response_model=ApolloPersonSearchResponse)
+async def apollo_search_people(
+    request: ApolloPersonSearchRequest,
+    settings: Settings = Depends(get_settings)
+):
+    """
+    Search for people using Apollo API.
+    
+    Requires APOLLO_API_KEY environment variable or api_key in request.
+    Returns people with email and phone number access based on your Apollo plan.
+    """
+    try:
+        # Get API key from request or environment
+        api_key = request.api_key or os.getenv("APOLLO_API_KEY")
+        
+        if not api_key:
+            return ApolloPersonSearchResponse(
+                success=False,
+                error="Apollo API key not provided. Set APOLLO_API_KEY environment variable or provide api_key in request.",
+                people=[],
+            )
+        
+        # Build request payload
+        payload = {}
+        
+        if request.person_titles:
+            payload["person_titles"] = request.person_titles
+        if request.person_locations:
+            payload["person_locations"] = request.person_locations
+        if request.organization_names:
+            payload["organization_names"] = request.organization_names
+        if request.person_emails:
+            payload["person_emails"] = request.person_emails
+        if request.person_names:
+            payload["person_names"] = request.person_names
+        if request.page:
+            payload["page"] = request.page
+        if request.per_page:
+            payload["per_page"] = request.per_page
+        
+        # Apollo API endpoint
+        url = "https://api.apollo.io/api/v1/mixed_people/search"
+        
+        headers = {
+            "accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/json",
+            "X-Api-Key": api_key,  # Apollo requires API key in header for security
+        }
+        
+        # Note: Do NOT include api_key in payload - Apollo requires it in X-Api-Key header only
+        
+        # Make API request
+        print(f"[Apollo API] Searching for people with filters: {list(payload.keys())}")
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if not response.ok:
+            error_msg = f"Apollo API error: {response.status_code}"
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("error", error_data.get("message", error_msg))
+                
+                # Check if it's a plan limitation error
+                if "free plan" in error_msg.lower() or "upgrade" in error_msg.lower():
+                    error_msg += " Note: The search endpoint requires a paid plan. Use /api/apollo/enrich-person for free plan enrichment."
+            except:
+                error_msg = f"{error_msg} - {response.text[:200]}"
+            
+            return ApolloPersonSearchResponse(
+                success=False,
+                error=error_msg,
+                people=[],
+            )
+        
+        # Parse response
+        data = response.json()
+        
+        # Extract people data
+        people_list = []
+        for person_data in data.get("people", []):
+            person = {
+                "id": person_data.get("id", ""),
+                "first_name": person_data.get("first_name"),
+                "last_name_obfuscated": person_data.get("last_name_obfuscated"),
+                "title": person_data.get("title"),
+                "last_refreshed_at": person_data.get("last_refreshed_at"),
+                "has_email": person_data.get("has_email"),
+                "has_city": person_data.get("has_city"),
+                "has_state": person_data.get("has_state"),
+                "has_country": person_data.get("has_country"),
+                "has_direct_phone": person_data.get("has_direct_phone"),
+                "email": person_data.get("email"),  # May be None if not accessible
+                "phone_number": person_data.get("phone_numbers", [{}])[0].get("raw_number") if person_data.get("phone_numbers") else None,
+            }
+            
+            # Add organization if present
+            if person_data.get("organization"):
+                person["organization"] = {
+                    "name": person_data.get("organization", {}).get("name"),
+                    "has_industry": person_data.get("organization", {}).get("has_industry"),
+                    "has_phone": person_data.get("organization", {}).get("has_phone"),
+                    "has_city": person_data.get("organization", {}).get("has_city"),
+                    "has_state": person_data.get("organization", {}).get("has_state"),
+                    "has_country": person_data.get("organization", {}).get("has_country"),
+                    "has_zip_code": person_data.get("organization", {}).get("has_zip_code"),
+                    "has_revenue": person_data.get("organization", {}).get("has_revenue"),
+                    "has_employee_count": person_data.get("organization", {}).get("has_employee_count"),
+                }
+            
+            people_list.append(person)
+        
+        print(f"[Apollo API] Found {len(people_list)} people (total: {data.get('total_entries', 0)})")
+        
+        return ApolloPersonSearchResponse(
+            total_entries=data.get("total_entries"),
+            people=people_list,
+            page=request.page or 1,
+            per_page=request.per_page or 25,
+            success=True,
+        )
+        
+    except requests.exceptions.RequestException as e:
+        return ApolloPersonSearchResponse(
+            success=False,
+            error=f"Network error: {str(e)}",
+            people=[],
+        )
+    except Exception as e:
+        print(f"[Apollo API] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ApolloPersonSearchResponse(
+            success=False,
+            error=f"Unexpected error: {str(e)}",
+            people=[],
+        )
+
+
+# Apollo API Person Enrichment Endpoint (Works on Free Plan)
+
+@app.post("/api/apollo/enrich-person", response_model=ApolloEnrichPersonResponse)
+async def apollo_enrich_person(
+    request: ApolloEnrichPersonRequest,
+    settings: Settings = Depends(get_settings)
+):
+    """
+    Enrich person data using Apollo API (works on free plan).
+    
+    Requires at least one of: email, first_name+last_name, or domain.
+    Returns enriched person data with email, phone, and organization information.
+    
+    Free Plan Limits:
+    - 50 calls per minute
+    - 200 calls per hour
+    - 600 calls per day
+    """
+    try:
+        # Get API key from request or environment
+        api_key = request.api_key or os.getenv("APOLLO_API_KEY")
+        
+        if not api_key:
+            return ApolloEnrichPersonResponse(
+                success=False,
+                error="Apollo API key not provided. Set APOLLO_API_KEY environment variable or provide api_key in request.",
+            )
+        
+        # Validate that at least one identifier is provided
+        if not request.email and not (request.first_name and request.last_name) and not request.domain:
+            return ApolloEnrichPersonResponse(
+                success=False,
+                error="At least one identifier required: email, (first_name + last_name), or domain",
+            )
+        
+        # Build request payload
+        payload = {}
+        
+        if request.email:
+            payload["email"] = request.email
+        if request.first_name:
+            payload["first_name"] = request.first_name
+        if request.last_name:
+            payload["last_name"] = request.last_name
+        if request.domain:
+            payload["domain"] = request.domain
+        
+        # Apollo API endpoint for enrichment (works on free plan)
+        url = "https://api.apollo.io/api/v1/people/match"
+        
+        headers = {
+            "accept": "application/json",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/json",
+            "X-Api-Key": api_key,
+        }
+        
+        # Make API request
+        print(f"[Apollo API] Enriching person with: {list(payload.keys())}")
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        
+        if not response.ok:
+            error_msg = f"Apollo API error: {response.status_code}"
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("error", error_data.get("message", error_msg))
+            except:
+                error_msg = f"{error_msg} - {response.text[:200]}"
+            
+            return ApolloEnrichPersonResponse(
+                success=False,
+                error=error_msg,
+            )
+        
+        # Parse response
+        data = response.json()
+        
+        # Extract person data
+        person_data = data.get("person", {})
+        
+        if not person_data:
+            return ApolloEnrichPersonResponse(
+                success=False,
+                error="No person data found in response",
+            )
+        
+        person = {
+            "id": person_data.get("id", ""),
+            "first_name": person_data.get("first_name"),
+            "last_name_obfuscated": person_data.get("last_name_obfuscated"),
+            "title": person_data.get("title"),
+            "last_refreshed_at": person_data.get("last_refreshed_at"),
+            "has_email": person_data.get("has_email"),
+            "has_city": person_data.get("has_city"),
+            "has_state": person_data.get("has_state"),
+            "has_country": person_data.get("has_country"),
+            "has_direct_phone": person_data.get("has_direct_phone"),
+            "email": person_data.get("email"),  # May be None if not accessible
+            "phone_number": person_data.get("phone_numbers", [{}])[0].get("raw_number") if person_data.get("phone_numbers") else None,
+        }
+        
+        # Add organization if present
+        if person_data.get("organization"):
+            person["organization"] = {
+                "name": person_data.get("organization", {}).get("name"),
+                "has_industry": person_data.get("organization", {}).get("has_industry"),
+                "has_phone": person_data.get("organization", {}).get("has_phone"),
+                "has_city": person_data.get("organization", {}).get("has_city"),
+                "has_state": person_data.get("organization", {}).get("has_state"),
+                "has_country": person_data.get("organization", {}).get("has_country"),
+                "has_zip_code": person_data.get("organization", {}).get("has_zip_code"),
+                "has_revenue": person_data.get("organization", {}).get("has_revenue"),
+                "has_employee_count": person_data.get("organization", {}).get("has_employee_count"),
+            }
+        
+        print(f"[Apollo API] Successfully enriched person: {person.get('first_name')} {person.get('last_name_obfuscated')}")
+        
+        return ApolloEnrichPersonResponse(
+            person=person,
+            success=True,
+        )
+        
+    except requests.exceptions.RequestException as e:
+        return ApolloEnrichPersonResponse(
+            success=False,
+            error=f"Network error: {str(e)}",
+        )
+    except Exception as e:
+        print(f"[Apollo API] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ApolloEnrichPersonResponse(
+            success=False,
+            error=f"Unexpected error: {str(e)}",
+        )
+
+
+# Sponsorship Check Endpoint
+
+@app.post("/api/check-sponsorship", response_model=SponsorshipInfo)
+async def check_sponsorship_endpoint(
+    request: SponsorshipCheckRequest,
+    settings: Settings = Depends(get_settings)
+):
+    """
+    Check if a company sponsors workers for UK visas.
+    
+    This endpoint uses the EXACT SAME process as the match-jobs endpoint:
+    1. Receives job_info (scraped job data)
+    2. Pre-extracts company name using multiple strategies
+    3. Uses LLM agent (summarize_scraped_data) to extract structured info including company_name
+    4. Checks UK visa sponsorship database using fuzzy matching
+    5. Uses AI agent to select correct company match
+    6. Optionally fetches additional company info from web
+    7. Builds enhanced summary combining CSV and web data
+    
+    Args:
+        request: SponsorshipCheckRequest with job_info (scraped job data)
+        settings: Application settings
+    
+    Returns:
+        SponsorshipInfo with sponsorship details (same format as match-jobs endpoint)
+    """
+    try:
+        print("\n" + "="*80)
+        print("🔍 SPONSORSHIP CHECKER - Checking company sponsorship status")
+        print("="*80)
+        
+        # Get job_info (scraped job data) - same as match-jobs endpoint
+        job_data = request.job_info
+        
+        if not job_data:
+            return SponsorshipInfo(
+                company_name=None,
+                sponsors_workers=False,
+                visa_types=None,
+                summary="job_info field is required and cannot be empty.",
+            )
+        
+        # STEP 1: Pre-extract company name using multiple strategies (same as match-jobs)
+        pre_extracted_company = None
+        try:
+            # Strategy 1: Look for "by [Company]" pattern (common in job postings)
+            by_pattern = r'(?:by|from|via)\s+([A-Z][A-Za-z0-9\s&.,\-]{2,60}(?:\s+(?:Ltd|Limited|Inc|LLC|Corp|Corporation|Group|Holdings|Technology|Solutions|Services))?)'
+            by_match = re.search(by_pattern, job_data[:2000], re.IGNORECASE)
+            if by_match:
+                potential_company = by_match.group(1).strip()
+                cleaned = clean_company_name(potential_company)
+                if cleaned and len(cleaned) >= 2:
+                    pre_extracted_company = cleaned
+                    print(f"[Company Extraction] Pre-extracted from 'by' pattern: {pre_extracted_company}")
+            
+            # Strategy 2: Use extract_company_name_from_content if Strategy 1 didn't work
+            if not pre_extracted_company:
+                extracted = extract_company_name_from_content(job_data[:2000], None)
+                if extracted and extracted != "Company name not available in posting" and len(extracted) >= 2:
+                    pre_extracted_company = extracted
+                    print(f"[Company Extraction] Pre-extracted from content: {pre_extracted_company}")
+            
+            # Strategy 3: Try sponsorship_checker extract_company_name
+            if not pre_extracted_company:
+                try:
+                    from sponsorship_checker import extract_company_name
+                    extracted = extract_company_name(job_data[:2000])
+                    if extracted:
+                        cleaned = clean_company_name(extracted)
+                        if cleaned and len(cleaned) >= 2:
+                            pre_extracted_company = cleaned
+                            print(f"[Company Extraction] Pre-extracted from sponsorship_checker: {pre_extracted_company}")
+                except Exception as e:
+                    print(f"[Company Extraction] Error using sponsorship_checker: {e}")
+        except Exception as e:
+            print(f"[Company Extraction] Error in pre-extraction: {e}")
+        
+        # STEP 2: Create scraped_data structure for LLM agent (same as match-jobs)
+        scraped_data = {
+            "url": None,
+            "job_title": None,
+            "company_name": pre_extracted_company,  # Pre-extracted company name to help summarizer
+            "location": None,
+            "description": job_data,
+            "qualifications": None,
+            "suggested_skills": None,
+            "text_content": job_data,
+            "html_length": len(job_data)
+        }
+        
+        # STEP 3: Use LLM agent to extract structured info (same as match-jobs)
+        from scrapers.response import summarize_scraped_data
+        
+        openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            return SponsorshipInfo(
+                company_name=None,
+                sponsors_workers=False,
+                visa_types=None,
+                summary="OpenAI API key is required for company name extraction.",
+            )
+        
+        print(f"[Sponsorship] Using LLM agent to extract company name and details from job_info...")
+        print(f"Job data length: {len(job_data)} characters")
+        
+        # Run summarizer in thread pool (same as match-jobs)
+        summarized_data = await asyncio.to_thread(
+            summarize_scraped_data,
+            scraped_data,
+            openai_key
+        )
+        
+        # STEP 4: Extract company name from summarized data (same priority as match-jobs)
+        summarized_company = summarized_data.get("company_name")
+        final_company = None
+        
+        # Priority 1: Use summarized company if available and valid
+        if summarized_company:
+            cleaned = clean_company_name(summarized_company)
+            if cleaned and len(cleaned) >= 2 and cleaned.lower() not in ["not specified", "unknown", "none"]:
+                final_company = cleaned
+                print(f"[Company Extraction] Using summarized company: {final_company}")
+        
+        # Priority 2: Use pre-extracted company if summarized didn't work
+        if not final_company and pre_extracted_company:
+            cleaned = clean_company_name(pre_extracted_company)
+            if cleaned and len(cleaned) >= 2:
+                final_company = cleaned
+                print(f"[Company Extraction] Using pre-extracted company: {final_company}")
+        
+        # Priority 3: Try extraction from content (first 2000 chars)
+        if not final_company:
+            first_2000 = job_data[:2000] if job_data else ""
+            extracted = extract_company_name_from_content(first_2000, None)
+            if extracted and extracted != "Company name not available in posting" and len(extracted) >= 2:
+                final_company = extracted
+                print(f"[Company Extraction] Extracted from content: {final_company}")
+        
+        # Priority 4: Try sponsorship_checker
+        if not final_company:
+            try:
+                from sponsorship_checker import extract_company_name
+                extracted = extract_company_name(job_data[:2000] if job_data else "")
+                if extracted:
+                    cleaned = clean_company_name(extracted)
+                    if cleaned and len(cleaned) >= 2:
+                        final_company = cleaned
+                        print(f"[Company Extraction] Extracted from sponsorship_checker: {final_company}")
+            except Exception as e:
+                print(f"[Company Extraction] Error using sponsorship_checker: {e}")
+        
+        if not final_company or final_company == "Company name not available in posting":
+            return SponsorshipInfo(
+                company_name=None,
+                sponsors_workers=False,
+                visa_types=None,
+                summary="Company name could not be extracted from the provided job_info. The LLM agent was unable to identify a company name in the job posting data.",
+            )
+        
+        # STEP 5: Check sponsorship (same as match-jobs)
+        from sponsorship_checker import check_sponsorship, get_company_info_from_web
+        
+        print(f"[Sponsorship] Checking company: {final_company}")
+        sponsorship_result = check_sponsorship(final_company, job_data, openai_key)
+        
+        # Get company info from web using Phi agent (same as match-jobs)
+        company_info_summary = None
+        matched_company_name = sponsorship_result.get('company_name') or final_company
+        if matched_company_name and matched_company_name.lower() not in ["unknown", "not specified", "none", ""]:
+            try:
+                # Get OpenAI API key from settings
+                openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+                if openai_key:
+                    print(f"[Sponsorship] Fetching additional company information from web...")
+                    company_info_summary = get_company_info_from_web(matched_company_name, openai_key)
+                else:
+                    print(f"[Sponsorship] OpenAI API key not available, skipping web search")
+            except Exception as e:
+                print(f"[Sponsorship] Error fetching company info from web: {e}")
+                # Continue without web info - not critical
+        
+        # Build enhanced summary (same as match-jobs)
+        base_summary = sponsorship_result.get('summary', 'No sponsorship information available')
+        # Clean and normalize the base summary
+        base_summary = clean_summary_text(base_summary)
+        enhanced_summary = base_summary
+        
+        if company_info_summary:
+            # Clean company info
+            company_info_cleaned = clean_summary_text(company_info_summary)
+            
+            # Remove redundant visa sponsorship information from company info
+            # (since we already have it confirmed from CSV)
+            sponsors_workers = sponsorship_result.get('sponsors_workers', False)
+            if sponsors_workers:
+                # Split into sentences and filter out redundant ones about visa sponsorship
+                sentences = re.split(r'[.!?]+', company_info_cleaned)
+                filtered_sentences = []
+                
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if not sentence or len(sentence) < 10:
+                        continue
+                    
+                    sentence_lower = sentence.lower()
+                    
+                    # Skip sentences about visa sponsorship that are uncertain/redundant
+                    # since we already have confirmed info from CSV
+                    if any(phrase in sentence_lower for phrase in ['visa sponsorship', 'visa sponsor', 'visa not', 'visa information']):
+                        # If it mentions uncertainty or suggests contacting, skip it
+                        if any(uncertain_phrase in sentence_lower for uncertain_phrase in [
+                            'not found', 'was not found', 'not available', 'uncertain',
+                            'potentially', 'generally', 'might', 'may', 'could', 'contact',
+                            'check', 'definitive information', 'advisable', 'check their',
+                            'hr department', 'official careers', 'cannot be filled'
+                        ]):
+                            continue  # Skip this redundant sentence
+                    
+                    filtered_sentences.append(sentence)
+                
+                # Rejoin sentences
+                company_info_cleaned = '. '.join(filtered_sentences)
+                if company_info_cleaned and not company_info_cleaned.endswith(('.', '!', '?')):
+                    company_info_cleaned += '.'
+                company_info_cleaned = re.sub(r'\s+', ' ', company_info_cleaned).strip()
+            
+            # Only append company info if there's substantial unique content
+            # (avoid repeating what's already in base_summary)
+            if company_info_cleaned and len(company_info_cleaned.strip()) > 30:
+                # Check for overlap with base_summary to avoid duplication
+                if base_summary:
+                    base_lower = base_summary.lower()
+                    company_lower = company_info_cleaned.lower()
+                    
+                    # Simple overlap check - if too similar, skip
+                    # Count common significant words (longer than 4 chars)
+                    base_words = {w for w in base_lower.split() if len(w) > 4}
+                    company_words = {w for w in company_lower.split() if len(w) > 4}
+                    common_words = base_words & company_words
+                    
+                    # If more than 40% overlap in significant content, don't duplicate
+                    if len(common_words) > 0 and len(common_words) / max(len(company_words), 1) > 0.4:
+                        # Just use base summary to avoid repetition
+                        enhanced_summary = base_summary
+                    else:
+                        # Add unique company information
+                        enhanced_summary = f"{base_summary}. {company_info_cleaned}"
+                else:
+                    enhanced_summary = company_info_cleaned
+            else:
+                # Not enough content, just use base summary
+                enhanced_summary = base_summary
+            
+            # Normalize whitespace and remove duplicate periods
+            enhanced_summary = re.sub(r'\s+', ' ', enhanced_summary)
+            enhanced_summary = re.sub(r'\.\s*\.', '.', enhanced_summary)  # Remove double periods
+            enhanced_summary = enhanced_summary.strip()
+            print(f"[Sponsorship] Enhanced summary with company information from web (removed redundant visa sponsorship info)")
+        
+        # Return SponsorshipInfo (same format as match-jobs)
+        return SponsorshipInfo(
+            company_name=sponsorship_result.get('company_name'),
+            sponsors_workers=sponsorship_result.get('sponsors_workers', False),
+            visa_types=sponsorship_result.get('visa_types'),
+            summary=enhanced_summary
+        )
+        
+    except FileNotFoundError as e:
+        return SponsorshipInfo(
+            company_name=None,
+            sponsors_workers=False,
+            visa_types=None,
+            summary=f"Sponsorship database not available: {str(e)}",
+        )
+    except Exception as e:
+        print(f"[Sponsorship] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return SponsorshipInfo(
+            company_name=None,
+            sponsors_workers=False,
+            visa_types=None,
+            summary=f"Error checking sponsorship: {str(e)}",
+        )
 
 
 # Playwright Scraper Endpoint with Agent Summarization
